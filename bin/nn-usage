@@ -1,4 +1,44 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+VERSION="1.0.0"
+
+usage() {
+  cat << EOF
+nn-usage ${VERSION}
+
+AI token usage status CLI for Claude, Codex and Cursor.
+
+Usage:
+  nn-usage
+  nn-usage --help
+  nn-usage --version
+
+Environment:
+  AI_USAGE_PLAN_PRICE_USD          Base plan price used for spending totals
+  AI_USAGE_CLAUDE_CUSTOM_SPEND_USD Extra Claude spend to include
+  AI_USAGE_CODEX_CUSTOM_SPEND_USD  Extra Codex spend to include
+  AI_USAGE_CURSOR_CUSTOM_SPEND_USD Extra Cursor spend to include
+  AI_USAGE_NO_REFRESH_PROMPT=1     Skip interactive provider refresh prompt
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  -v|--version)
+    echo "$VERSION"
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    echo "Run 'nn-usage --help' for usage." >&2
+    exit 2
+    ;;
+esac
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
 bar() {
@@ -1222,14 +1262,14 @@ left = (
 right = expand_panel(
     [
         f"{ORANGE}Tips for getting started{RESET}",
-        f"{GREEN}Run {BOLD}ai-usage{RESET}{GREEN} anytime for usage{RESET}",
+        f"{GREEN}Run {BOLD}nn-usage{RESET}{GREEN} anytime for usage{RESET}",
         f"{GREEN}Claude · Codex · Cursor in one view{RESET}",
         "",
         f"{ORANGE}What's tracked{RESET}",
         f"{GREEN}Session + weekly limits per provider{RESET}",
         f"{GREEN}Auto · premium · billing cycle{RESET}",
         f"{GREEN}Plan spend + custom spend{RESET}",
-        f"{DIM}/ai-usage · NovaNode dev tools{RESET}",
+        f"{DIM}/nn-usage · NovaNode dev tools{RESET}",
     ],
     right_w,
 )
