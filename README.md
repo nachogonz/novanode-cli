@@ -2,7 +2,7 @@
 
 AI token usage status CLI for **Claude**, **Codex**, and **Cursor**.
 
-Ships as a single Bash executable exposed as `nn-usage`.
+Ships as a single Bash executable exposed as `novanode` and `nn-usage`.
 
 ## Install
 
@@ -28,11 +28,13 @@ installed yet. Run the `brew tap` command above first.
 npm install -g @nakdev-npm/novanode
 ```
 
-Both channels install the same `nn-usage` command onto your `PATH`.
+Both channels install the same `novanode` and `nn-usage` commands onto your
+`PATH`.
 
 ## Usage
 
 ```sh
+novanode
 nn-usage
 ```
 

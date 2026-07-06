@@ -15,9 +15,12 @@ class Novanode < Formula
       export PATH="#{formula_opt_bin("python@3.12")}:$PATH"
       exec "#{libexec}/bin/nn-usage" "$@"
     SH
+
+    bin.install_symlink "nn-usage" => "novanode"
   end
 
   test do
+    assert_equal version.to_s, shell_output("#{bin}/novanode --version").strip
     assert_equal version.to_s, shell_output("#{bin}/nn-usage --version").strip
     assert_match "Usage:", shell_output("#{bin}/nn-usage --help")
   end
