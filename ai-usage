@@ -1,0 +1,1388 @@
+#!/bin/bash
+
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+bar() {
+  python3 - "$1" "$2" << 'PYEOF'
+import sys
+p = max(0, min(float(sys.argv[1] or 0), 100))
+w = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else 22
+f = round((p / 100) * w)
+print("█" * f + "░" * (w - f))
+PYEOF
+}
+
+table_bar() { bar "$1" "${AI_USAGE_BAR_W:-22}"; }
+
+num_or_zero() {
+  local v="$1"
+  if [ "$v" = "n/a" ] || [ "$v" = "stale" ] || [ -z "$v" ]; then
+    echo "0"
+  else
+    echo "$v" | sed 's/%//'
+  fi
+}
+
+AI_USAGE_PLAN_PRICE_USD="${AI_USAGE_PLAN_PRICE_USD:-20}"
+AI_USAGE_CLAUDE_CUSTOM_SPEND_USD="${AI_USAGE_CLAUDE_CUSTOM_SPEND_USD:-2.5}"
+AI_USAGE_CODEX_CUSTOM_SPEND_USD="${AI_USAGE_CODEX_CUSTOM_SPEND_USD:-0}"
+
+refresh_after_unlock() {
+  [ -t 0 ] && [ -t 1 ] || return 0
+  [ "${AI_USAGE_NO_REFRESH_PROMPT:-0}" = "1" ] && return 0
+
+  local claude_needs="$1"
+  local codex_needs="$2"
+  local options prompt key
+
+  if [ "$claude_needs" != "1" ] && [ "$codex_needs" != "1" ]; then
+    return 0
+  fi
+
+  echo
+  echo "Usage snapshot needs a provider refresh."
+  options="[enter] skip"
+  if [ "$codex_needs" = "1" ]; then options="[c] Codex  ${options}"; fi
+  if [ "$claude_needs" = "1" ]; then options="[a] Claude  ${options}"; fi
+  if [ "$claude_needs" = "1" ] && [ "$codex_needs" = "1" ]; then options="[r] both  ${options}"; fi
+  prompt="Refresh now? ${options}: "
+
+  printf "%s" "$prompt"
+  IFS= read -r -s -n 1 key || key=""
+  echo
+
+  case "$key" in
+    c|C)
+      [ "$codex_needs" = "1" ] && codex
+      ;;
+    a|A)
+      [ "$claude_needs" = "1" ] && claude
+      ;;
+    r|R)
+      if [ "$codex_needs" = "1" ]; then
+        codex
+      fi
+      if [ "$claude_needs" = "1" ]; then
+        claude
+      fi
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  AI_USAGE_NO_REFRESH_PROMPT=1 exec "$0"
+}
+
+start_loading() {
+  [ -t 2 ] || return 0
+  LOADING_DONE_FILE=$(mktemp "${TMPDIR:-/tmp}/ai-usage-loading.XXXXXX")
+  (
+    frames='⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷'
+    set -- $frames
+    i=1
+    while [ ! -f "$LOADING_DONE_FILE" ]; do
+      printf '\r\033[2K%s  Loading AI usage...' "$1" >&2
+      shift
+      [ $# -eq 0 ] && set -- $frames
+      i=$((i + 1))
+      sleep 0.08
+    done
+    printf '\r\033[2K' >&2
+  ) &
+  LOADING_PID=$!
+}
+
+stop_loading() {
+  [ -n "${LOADING_DONE_FILE:-}" ] && : > "$LOADING_DONE_FILE" 2>/dev/null
+  [ -n "${LOADING_PID:-}" ] && wait "$LOADING_PID" 2>/dev/null
+  [ -n "${LOADING_DONE_FILE:-}" ] && rm -f "$LOADING_DONE_FILE" 2>/dev/null
+}
+
+trap 'stop_loading; rm -f "$CLAUDE_TMP" "$CURSOR_TMP" "$CODEX_TMP" 2>/dev/null' EXIT
+
+start_loading
+
+CLAUDE_STATUSLINE_INPUT=""
+if [ ! -t 0 ]; then
+  CLAUDE_STATUSLINE_INPUT=$(cat)
+fi
+
+# ─── Fetch providers in parallel ──────────────────────────────────────────────
+CLAUDE_TMP=$(mktemp "${TMPDIR:-/tmp}/ai-usage-claude.XXXXXX")
+CURSOR_TMP=$(mktemp "${TMPDIR:-/tmp}/ai-usage-cursor.XXXXXX")
+CODEX_TMP=$(mktemp "${TMPDIR:-/tmp}/ai-usage-codex.XXXXXX")
+
+(
+CLAUDE_STATUSLINE_INPUT="$CLAUDE_STATUSLINE_INPUT" python3 << 'PYEOF' > "$CLAUDE_TMP"
+import glob, json, os, re, subprocess, time, urllib.error, urllib.request
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+def bar(percent, w=22):
+    try:
+        p = max(0, min(float(percent), 100)) / 100
+    except Exception:
+        p = 0
+    f = round(p * w)
+    return "█" * f + "░" * (w - f)
+
+def fmt_time(value):
+    if value is None:
+        return "n/a"
+    try:
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            dt = datetime.fromtimestamp(ts, timezone.utc)
+        else:
+            text = str(value).strip()
+            if not text:
+                return "n/a"
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
+        return local.strftime("%H:%M")
+    except Exception:
+        return "n/a"
+
+def fmt_week(value):
+    if value is None:
+        return "n/a"
+    try:
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            dt = datetime.fromtimestamp(ts, timezone.utc)
+        else:
+            text = str(value).strip()
+            if not text:
+                return "n/a"
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
+        return local.strftime("%-d %b")
+    except Exception:
+        return "n/a"
+
+def fmt_pct(value):
+    try:
+        return f"{float(value):.0f}"
+    except Exception:
+        return "n/a"
+
+def emit(five_pct, five_reset, week_pct, week_reset):
+    print(f"{bar(five_pct)}|{fmt_pct(five_pct)}|{five_reset or 'n/a'}")
+    print(f"{bar(week_pct)}|{fmt_pct(week_pct)}|{week_reset or 'n/a'}")
+
+CACHE_PATH = os.path.expanduser("~/.cache/ai-usage/claude-usage.json")
+CACHE_TTL = 120
+CACHE_REFRESH = 30
+
+def cache_age():
+    try:
+        with open(CACHE_PATH) as fh:
+            return time.time() - json.load(fh).get("fetched_at", 0)
+    except Exception:
+        return None
+
+def load_cache(allow_stale=False):
+    try:
+        with open(CACHE_PATH) as fh:
+            cached = json.load(fh)
+        age = time.time() - cached.get("fetched_at", 0)
+        if allow_stale or age <= CACHE_TTL:
+            return cached.get("usage")
+    except Exception:
+        pass
+    return None
+
+def save_cache(usage):
+    try:
+        os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+        with open(CACHE_PATH, "w") as fh:
+            json.dump({"fetched_at": time.time(), "usage": usage}, fh)
+    except Exception:
+        pass
+
+def usage_from_payload(usage):
+    five = usage.get("five_hour") or {}
+    week = usage.get("seven_day") or {}
+    limits = usage.get("limits") or []
+    five_pct = five.get("utilization")
+    week_pct = week.get("utilization")
+    five_reset = five.get("resets_at")
+    week_reset = week.get("resets_at")
+    for item in limits:
+        kind = item.get("kind")
+        if kind == "session" and five_pct is None:
+            five_pct = item.get("percent")
+            five_reset = five_reset or item.get("resets_at")
+        if kind == "weekly_all" and week_pct is None:
+            week_pct = item.get("percent")
+            week_reset = week_reset or item.get("resets_at")
+    return (
+        five_pct if five_pct is not None else 0,
+        fmt_time(five_reset),
+        week_pct if week_pct is not None else 0,
+        fmt_week(week_reset),
+    )
+
+def fetch_oauth_usage():
+    age = cache_age()
+    if age is not None and age <= CACHE_REFRESH:
+        return load_cache()
+
+    try:
+        raw = subprocess.check_output(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        creds = json.loads(raw)
+        token = creds.get("claudeAiOauth", {}).get("accessToken")
+        if not token:
+            return None
+        try:
+            version = subprocess.check_output(["claude", "--version"], stderr=subprocess.DEVNULL, text=True).strip().split()[0]
+        except Exception:
+            version = "0.0.0"
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": f"claude-code/{version}",
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            usage = json.loads(resp.read().decode("utf-8"))
+            save_cache(usage)
+            return usage
+    except Exception:
+        return load_cache(allow_stale=True)
+
+def from_statusline():
+    statusline_raw = os.environ.get("CLAUDE_STATUSLINE_INPUT", "").strip()
+    if not statusline_raw:
+        return None
+    try:
+        statusline = json.loads(statusline_raw)
+        rate_limits = statusline.get("rate_limits") or statusline.get("rateLimits") or {}
+        primary = rate_limits.get("primary") or rate_limits.get("five_hour") or {}
+        secondary = rate_limits.get("secondary") or rate_limits.get("seven_day") or {}
+        five_pct = primary.get("used_percentage")
+        week_pct = secondary.get("used_percentage")
+        if five_pct is None and week_pct is None:
+            return None
+        return (
+            five_pct if five_pct is not None else 0,
+            fmt_time(primary.get("resets_at")),
+            week_pct if week_pct is not None else 0,
+            fmt_week(secondary.get("resets_at")),
+        )
+    except Exception:
+        return None
+
+def parse_reset_text(text, event_ts, weekly=False):
+    if not text or event_ts is None:
+        return None
+    clean = re.sub(r"\s*\([^)]*\)", "", str(text)).strip()
+    tz_name = "America/Argentina/Buenos_Aires"
+    tz_match = re.search(r"\(([^)]+)\)", str(text))
+    if tz_match:
+        tz_name = tz_match.group(1)
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("America/Argentina/Buenos_Aires")
+    try:
+        event_text = str(event_ts).strip()
+        if event_text.endswith("Z"):
+            event_text = event_text[:-1] + "+00:00"
+        base = datetime.fromisoformat(event_text).astimezone(tz)
+    except Exception:
+        return None
+    try:
+        if weekly:
+            m = re.search(r"([A-Za-z]{3}\s+\d{1,2}).*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", clean, re.I)
+            if not m:
+                return None
+            month_day = m.group(1)
+            clock = re.sub(r"\s+", "", m.group(2).lower())
+            for fmt in ("%b %d %I:%M%p", "%b %d %I%p"):
+                try:
+                    return datetime.strptime(f"{month_day} {clock}", fmt).replace(year=base.year, tzinfo=tz)
+                except Exception:
+                    continue
+        else:
+            m = re.search(r"(\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm))", clean, re.I)
+            if not m:
+                return None
+            clock = re.sub(r"\s+", "", m.group(1).lower())
+            for fmt in ("%I:%M%p", "%I%p"):
+                try:
+                    dt = datetime.strptime(clock, fmt).replace(
+                        year=base.year, month=base.month, day=base.day, tzinfo=tz
+                    )
+                    if dt < base:
+                        dt += timedelta(days=1)
+                    return dt
+                except Exception:
+                    continue
+    except Exception:
+        return None
+    return None
+
+def extract_limit_text(content):
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                return part.get("text", "")
+    if isinstance(content, str):
+        return content
+    return ""
+
+def reset_label_from_text(text):
+    m = re.search(r"resets\s+(.+?)(?:\s*\(|$)", text, re.I)
+    return m.group(1).strip() if m else None
+
+def from_logs():
+    now = datetime.now(timezone.utc)
+    latest_five = None
+    latest_weekly = None
+    latest_five_util = None
+    latest_week_util = None
+    paths = glob.glob(os.path.expanduser("~/Library/Application Support/Claude/local-agent-mode-sessions/**/*.jsonl"), recursive=True)
+    for path in paths:
+        try:
+            with open(path, errors="ignore") as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        continue
+                    info = d.get("rate_limit_info") if d.get("type") == "rate_limit_event" else None
+                    if info:
+                        util = info.get("utilization")
+                        reset_raw = info.get("resetsAt")
+                        rate_type = info.get("rateLimitType")
+                        if util is not None and rate_type == "five_hour":
+                            latest_five_util = (float(util) * 100 if float(util) <= 1 else float(util), reset_raw)
+                        if util is not None and rate_type == "seven_day":
+                            latest_week_util = (float(util) * 100 if float(util) <= 1 else float(util), reset_raw)
+                    text = extract_limit_text(d.get("message", {}).get("content", ""))
+                    lower = text.lower()
+                    if "weekly limit" in lower:
+                        reset_dt = parse_reset_text(text, d.get("timestamp"), True)
+                        reset_label = reset_label_from_text(text)
+                        if reset_dt and reset_dt > now.astimezone(reset_dt.tzinfo) and (latest_weekly is None or reset_dt > latest_weekly[0]):
+                            latest_weekly = (reset_dt, {"utilization": 1.0, "resetsAtText": reset_label})
+                    if "session limit" in lower:
+                        reset_dt = parse_reset_text(text, d.get("timestamp"), False)
+                        reset_label = reset_label_from_text(text)
+                        if reset_dt and reset_dt > now.astimezone(reset_dt.tzinfo) and (latest_five is None or reset_dt > latest_five[0]):
+                            latest_five = (reset_dt, {"utilization": 1.0, "resetsAtText": reset_label})
+        except Exception:
+            pass
+
+    paths = glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True)
+    for path in paths[-20:]:
+        try:
+            with open(path, errors="ignore") as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        continue
+                    if d.get("error") != "rate_limit":
+                        continue
+                    text = extract_limit_text(d.get("message", {}).get("content", ""))
+                    lower = text.lower()
+                    if "weekly limit" in lower:
+                        reset_dt = parse_reset_text(text, d.get("timestamp"), True)
+                        reset_label = reset_label_from_text(text)
+                        if reset_dt and reset_dt > now.astimezone(reset_dt.tzinfo) and (latest_weekly is None or reset_dt > latest_weekly[0]):
+                            latest_weekly = (reset_dt, {"utilization": 1.0, "resetsAtText": reset_label})
+                    if "session limit" in lower:
+                        reset_dt = parse_reset_text(text, d.get("timestamp"), False)
+                        reset_label = reset_label_from_text(text)
+                        if reset_dt and reset_dt > now.astimezone(reset_dt.tzinfo) and (latest_five is None or reset_dt > latest_five[0]):
+                            latest_five = (reset_dt, {"utilization": 1.0, "resetsAtText": reset_label})
+        except Exception:
+            pass
+
+    def pct_from(item, util_item):
+        if util_item:
+            pct = util_item[0]
+            reset = fmt_time(util_item[1]) if util_item[1] is not None else "n/a"
+            return pct, reset
+        if not item:
+            return None, "n/a"
+        info = item[1]
+        util = info.get("utilization")
+        if util is not None:
+            pct = float(util) * 100 if float(util) <= 1 else float(util)
+            return pct, info.get("resetsAtText") or fmt_time(info.get("resetsAt"))
+        if info.get("resetsAtText"):
+            return 100.0, info.get("resetsAtText")
+        if info.get("resetsAt"):
+            return 100.0, fmt_time(info.get("resetsAt"))
+        return None, "n/a"
+
+    five_pct, five_reset = pct_from(latest_five, latest_five_util)
+    week_pct, week_reset = pct_from(latest_weekly, latest_week_util)
+    if five_pct is None and week_pct is None:
+        return None
+    return (
+        five_pct if five_pct is not None else 0,
+        five_reset,
+        week_pct if week_pct is not None else 0,
+        week_reset,
+    )
+
+usage = fetch_oauth_usage()
+if usage:
+    emit(*usage_from_payload(usage))
+    raise SystemExit
+
+cached = load_cache(allow_stale=True)
+if cached:
+    emit(*usage_from_payload(cached))
+    raise SystemExit
+
+statusline = from_statusline()
+if statusline:
+    emit(*statusline)
+    raise SystemExit
+
+logs = from_logs()
+if logs:
+    emit(*logs)
+    raise SystemExit
+
+emit(0, "n/a", 0, "n/a")
+PYEOF
+) &
+
+(
+python3 << 'PYEOF' > "$CURSOR_TMP"
+import sqlite3, json, os, urllib.request
+from datetime import datetime
+
+db = os.path.expanduser('~/Library/Application Support/Cursor/User/globalStorage/state.vscdb')
+
+def fmt_money(cents):
+    if cents is None:
+        return "n/a"
+    return f"${cents / 100:.2f}"
+
+def fmt_pct(n):
+    if n is None:
+        return "n/a"
+    return f"{float(n):.1f}%"
+
+def bar(percent, w=22):
+    p = max(0, min(float(percent or 0) / 100, 1))
+    f = int(p * w)
+    return "█" * f + "░" * (w - f)
+
+def fmt_date(ms):
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000).strftime("%b %d")
+    except Exception:
+        return "n/a"
+
+try:
+    conn = sqlite3.connect(db)
+    cur  = conn.cursor()
+    def get(k):
+        cur.execute('SELECT value FROM ItemTable WHERE key=?',(k,))
+        r = cur.fetchone()
+        return r[0].strip('"') if r else ''
+    plan   = get('cursorAuth/stripeMembershipType')
+    status = get('cursorAuth/stripeSubscriptionStatus')
+    raw    = get('cursorAuth/cachedScopedProfile')
+    name   = json.loads(raw).get('displayName','') if raw else ''
+    token  = get('cursorAuth/accessToken')
+    conn.close()
+
+    usage = {}
+    plan_info = {}
+    if token:
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': 'Bearer ' + token,
+        }
+        for method, target in [
+            ('GetCurrentPeriodUsage', usage),
+            ('GetPlanInfo', plan_info),
+        ]:
+            try:
+                req = urllib.request.Request(
+                    f'https://api2.cursor.sh/aiserver.v1.DashboardService/{method}',
+                    data=b'{}',
+                    headers=headers,
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    target.update(json.loads(resp.read().decode('utf-8')))
+            except Exception:
+                pass
+
+    plan_usage = usage.get('planUsage') or {}
+    plan_block = plan_info.get('planInfo') or {}
+    total = plan_usage.get('totalSpend')
+    limit = plan_usage.get('limit') or plan_block.get('includedAmountCents')
+    auto_pct = plan_usage.get('autoPercentUsed')
+    api_pct = plan_usage.get('apiPercentUsed')
+    total_pct = plan_usage.get('totalPercentUsed')
+    auto_spend = plan_usage.get('autoSpend')
+    api_spend = plan_usage.get('apiSpend')
+    cycle_end = usage.get('billingCycleEnd') or plan_block.get('billingCycleEnd')
+
+    if usage:
+        cursor_usage = "|".join([
+            bar(auto_pct), fmt_pct(auto_pct), fmt_money(auto_spend) if auto_spend is not None else "",
+            bar(api_pct), fmt_pct(api_pct), fmt_money(api_spend) if api_spend is not None else "",
+            bar(total_pct), fmt_pct(total_pct), fmt_money(total), fmt_money(limit), fmt_date(cycle_end),
+        ])
+    else:
+        cursor_usage = "unavailable||||||||||"
+
+    print(f"{plan}|{status}|{name}|{cursor_usage}")
+except Exception:
+    print("unknown|unknown||unavailable||||||||||")
+PYEOF
+) &
+
+(
+python3 << 'PYEOF' > "$CODEX_TMP"
+import json, sqlite3, os
+from datetime import datetime
+
+def bar(percent, w=22):
+    p = max(0, min(float(percent or 0), 100)) / 100
+    f = round(p * w)
+    return "█" * f + "░" * (w - f)
+
+def fmt_reset(ts, weekly=False):
+    try:
+        dt = datetime.fromtimestamp(float(ts))
+        return dt.strftime("%-d %b") if weekly else dt.strftime("%H:%M")
+    except Exception:
+        return "n/a"
+
+def emit(label, item, weekly=False):
+    now = datetime.now()
+    reset_ts = item.get("reset_at")
+    reset_dt = None
+    if reset_ts is not None:
+        try:
+            reset_dt = datetime.fromtimestamp(float(reset_ts))
+        except Exception:
+            reset_dt = None
+
+    used = max(0, min(100, float(item.get("used_percent", 0))))
+    stale = bool(reset_dt and reset_dt <= now and not weekly)
+
+    if stale:
+        reset_label = f"passed {reset_dt.strftime('%H:%M')} · run codex to refresh"
+        print(f"{label}|{bar(0)}|stale|{reset_label}")
+        return
+
+    print(f"{label}|{bar(used)}|{used:.0f}|{fmt_reset(reset_ts, weekly)}")
+
+db = os.path.expanduser('~/.codex/logs_2.sqlite')
+try:
+    conn = sqlite3.connect(db)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT feedback_log_body FROM logs "
+        "WHERE feedback_log_body LIKE '%\"type\":\"codex.rate_limits\"%' "
+        "ORDER BY ts DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        raise RuntimeError("no rate limit snapshot")
+
+    body = row[0]
+    start = body.find('{')
+    data = json.loads(body[start:])
+    limits = data.get('rate_limits') or {}
+    emit("5h", limits.get('primary') or {})
+    emit("Weekly", limits.get('secondary') or {}, True)
+except Exception:
+    print("5h|░░░░░░░░░░░░░░░░░░░░░░|n/a|n/a")
+    print("Weekly|░░░░░░░░░░░░░░░░░░░░░░|n/a|n/a")
+PYEOF
+) &
+
+wait
+CLAUDE_RAW=$(cat "$CLAUDE_TMP")
+CURSOR_RAW=$(cat "$CURSOR_TMP")
+CODEX_RAW=$(cat "$CODEX_TMP")
+
+C5H=$(echo "$CLAUDE_RAW"|sed -n '1p')
+C7D=$(echo "$CLAUDE_RAW"|sed -n '2p')
+CLAUDE_5H_BAR=$(echo "$C5H"|cut -d'|' -f1); CLAUDE_5H_PCT=$(echo "$C5H"|cut -d'|' -f2); CLAUDE_5H_RESET=$(echo "$C5H"|cut -d'|' -f3)
+CLAUDE_WEEK_BAR=$(echo "$C7D"|cut -d'|' -f1); CLAUDE_WEEK_PCT=$(echo "$C7D"|cut -d'|' -f2); CLAUDE_WEEK_RESET=$(echo "$C7D"|cut -d'|' -f3)
+if [ "$CLAUDE_5H_PCT" = "n/a" ]; then CLAUDE_5H_PCT_LABEL="n/a"; else CLAUDE_5H_PCT_LABEL="${CLAUDE_5H_PCT}%"; fi
+if [ "$CLAUDE_WEEK_PCT" = "n/a" ]; then CLAUDE_WEEK_PCT_LABEL="n/a"; else CLAUDE_WEEK_PCT_LABEL="${CLAUDE_WEEK_PCT}%"; fi
+CVER=$(claude --version 2>/dev/null|head -1|sed 's/ (Claude Code)//')
+
+CURSOR_PLAN=$(echo "$CURSOR_RAW"|cut -d'|' -f1)
+CURSOR_STATUS=$(echo "$CURSOR_RAW"|cut -d'|' -f2)
+CURSOR_NAME=$(echo "$CURSOR_RAW"|cut -d'|' -f3)
+CURSOR_AUTO_BAR=$(echo "$CURSOR_RAW"|cut -d'|' -f4); CURSOR_AUTO_PCT=$(echo "$CURSOR_RAW"|cut -d'|' -f5); CURSOR_AUTO_SPEND=$(echo "$CURSOR_RAW"|cut -d'|' -f6)
+CURSOR_PREM_BAR=$(echo "$CURSOR_RAW"|cut -d'|' -f7); CURSOR_PREM_PCT=$(echo "$CURSOR_RAW"|cut -d'|' -f8); CURSOR_PREM_SPEND=$(echo "$CURSOR_RAW"|cut -d'|' -f9)
+CURSOR_TOTAL_BAR=$(echo "$CURSOR_RAW"|cut -d'|' -f10); CURSOR_TOTAL_PCT=$(echo "$CURSOR_RAW"|cut -d'|' -f11); CURSOR_TOTAL_SPEND=$(echo "$CURSOR_RAW"|cut -d'|' -f12)
+CURSOR_LIMIT=$(echo "$CURSOR_RAW"|cut -d'|' -f13); CURSOR_CYCLE_END=$(echo "$CURSOR_RAW"|cut -d'|' -f14)
+CURSOR_VER=$(cursor --version 2>/dev/null|head -1)
+
+CX5H=$(echo "$CODEX_RAW"|sed -n '1p')
+CX7D=$(echo "$CODEX_RAW"|sed -n '2p')
+CX5_LABEL=$(echo "$CX5H"|cut -d'|' -f1); CX5_BAR=$(echo "$CX5H"|cut -d'|' -f2); CX5_PCT=$(echo "$CX5H"|cut -d'|' -f3); CX5_RESET=$(echo "$CX5H"|cut -d'|' -f4)
+CX7_LABEL=$(echo "$CX7D"|cut -d'|' -f1); CX7_BAR=$(echo "$CX7D"|cut -d'|' -f2); CX7_PCT=$(echo "$CX7D"|cut -d'|' -f3); CX7_RESET=$(echo "$CX7D"|cut -d'|' -f4)
+CXVER=$(codex --version 2>/dev/null|head -1|sed 's/codex-cli //')
+CLAUDE_NEEDS_REFRESH=0
+CODEX_NEEDS_REFRESH=0
+if [ "$CLAUDE_5H_PCT" = "n/a" ] || [ "$CLAUDE_WEEK_PCT" = "n/a" ]; then
+  CLAUDE_NEEDS_REFRESH=1
+fi
+if [ "$CX5_PCT" = "stale" ] || [ "$CX5_PCT" = "n/a" ] || [ "$CX7_PCT" = "n/a" ]; then
+  CODEX_NEEDS_REFRESH=1
+fi
+if [ "$CX5_PCT" = "stale" ]; then
+  CX5_PCT_LABEL="stale"
+  CX5_RESET_LABEL="$CX5_RESET"
+else
+  CX5_PCT_LABEL="${CX5_PCT}%"
+  CX5_RESET_LABEL="resets ${CX5_RESET}"
+fi
+
+# ─── Unified layout width (header + table) ───────────────────────────────────
+LAYOUT=$(python3 -c "import os; c=int(os.environ.get('COLUMNS', '80') or 80); print(max(76, min(c - 2, 118)))")
+COL_W=$(python3 -c "print(max(26, (int('${LAYOUT}') - 2) // 3))")
+BAR_W=$(python3 -c "print(max(20, int('${COL_W}') - 5))")
+export AI_USAGE_BAR_W="$BAR_W"
+
+# ─── Total usage across providers ─────────────────────────────────────────────
+SUPER_RAW=$(python3 << PYEOF
+values = []
+for v in [
+    $(num_or_zero "$CLAUDE_5H_PCT"),
+    $(num_or_zero "$CLAUDE_WEEK_PCT"),
+    $(num_or_zero "$CURSOR_AUTO_PCT"),
+    $(num_or_zero "$CURSOR_PREM_PCT"),
+    $(num_or_zero "$CX5_PCT"),
+    $(num_or_zero "$CX7_PCT"),
+]:
+    try:
+        values.append(float(v))
+    except Exception:
+        pass
+
+if not values:
+    print("0|░░░░░░░░░░░░░░░░░░░░░░|n/a")
+else:
+    total = sum(values)
+    avg = total / len(values)
+    w = int("""${BAR_W}""")
+    f = round(max(0, min(avg, 100)) / 100 * w)
+    bar = "█" * f + "░" * (w - f)
+    print(f"{avg:.0f}|{bar}|{total:.0f}")
+PYEOF
+)
+SUPER_PCT=$(echo "$SUPER_RAW"|cut -d'|' -f1)
+SUPER_BAR=$(echo "$SUPER_RAW"|cut -d'|' -f2)
+SUPER_SUM=$(echo "$SUPER_RAW"|cut -d'|' -f3)
+if [ "$SUPER_PCT" = "n/a" ] || [ -z "$SUPER_PCT" ]; then
+  SUPER_PCT_LABEL="n/a"
+else
+  SUPER_PCT_LABEL="${SUPER_PCT}% avg"
+fi
+
+SPEND_RAW=$(AI_USAGE_CURSOR_CUSTOM_SPEND_USD="${AI_USAGE_CURSOR_CUSTOM_SPEND_USD:-}" python3 << PYEOF
+import os, re
+
+def as_float(value, default=0.0):
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        return float(re.sub(r"[^0-9.\-]", "", text))
+    except Exception:
+        return default
+
+def money(value):
+    return "$" + f"{value:.2f}"
+
+base = as_float("""${AI_USAGE_PLAN_PRICE_USD}""", 20.0)
+claude_custom = as_float("""${AI_USAGE_CLAUDE_CUSTOM_SPEND_USD}""")
+codex_custom = as_float("""${AI_USAGE_CODEX_CUSTOM_SPEND_USD}""")
+cursor_custom_env = os.environ.get("AI_USAGE_CURSOR_CUSTOM_SPEND_USD")
+cursor_custom = (
+    as_float(cursor_custom_env)
+    if cursor_custom_env not in (None, "")
+    else as_float("""${CURSOR_PREM_SPEND}""")
+)
+
+claude_total = base + claude_custom
+codex_total = base + codex_custom
+cursor_total = base + cursor_custom
+plans_total = base * 3
+custom_total = claude_custom + codex_custom + cursor_custom
+grand_total = plans_total + custom_total
+
+print("|".join([
+    money(base),
+    money(claude_custom), money(claude_total),
+    money(codex_custom), money(codex_total),
+    money(cursor_custom), money(cursor_total),
+    money(plans_total), money(custom_total), money(grand_total),
+]))
+PYEOF
+)
+PLAN_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f1)
+CLAUDE_CUSTOM_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f2)
+CLAUDE_TOTAL_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f3)
+CODEX_CUSTOM_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f4)
+CODEX_TOTAL_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f5)
+CURSOR_CUSTOM_SPEND=$(echo "$SPEND_RAW"|cut -d'|' -f6)
+CURSOR_TOTAL_DOLLARS=$(echo "$SPEND_RAW"|cut -d'|' -f7)
+PLAN_SPEND_TOTAL=$(echo "$SPEND_RAW"|cut -d'|' -f8)
+CUSTOM_SPEND_TOTAL=$(echo "$SPEND_RAW"|cut -d'|' -f9)
+GRAND_SPEND_TOTAL=$(echo "$SPEND_RAW"|cut -d'|' -f10)
+
+C5H_TB=$(table_bar "$(num_or_zero "$CLAUDE_5H_PCT")")
+C7D_TB=$(table_bar "$(num_or_zero "$CLAUDE_WEEK_PCT")")
+CX5_TB=$(table_bar "$(num_or_zero "$CX5_PCT")")
+CX7_TB=$(table_bar "$(num_or_zero "$CX7_PCT")")
+CA_TB=$(table_bar "$(num_or_zero "$CURSOR_AUTO_PCT")")
+CP_TB=$(table_bar "$(num_or_zero "$CURSOR_PREM_PCT")")
+CT_TB=$(table_bar "$(num_or_zero "$CURSOR_TOTAL_PCT")")
+
+# ─── Render ───────────────────────────────────────────────────────────────────
+DISPLAY_NAME="${CURSOR_NAME:-User}"
+FIRST_NAME="${DISPLAY_NAME%% *}"
+CWD=$(pwd)
+
+stop_loading
+
+python3 << PYEOF
+import os, textwrap
+
+name = """${FIRST_NAME}"""
+cwd = """${CWD}"""
+claude_v = """${CVER}"""
+codex_v = """${CXVER}"""
+cursor_v = """${CURSOR_VER}"""
+
+ORANGE = "\033[38;5;208m"
+GREEN = "\033[38;5;82m"
+WHITE = "\033[38;2;249;249;249m"
+DIM = "\033[38;5;245m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+MARK_CROP_RATIO = 85 / 373
+WORD_CROP_START = 100 / 373
+LOGO_RENDER_WIDTH = 960
+
+width = int("""${LAYOUT}""")
+inner = width - 4
+left_w = max(34, (inner * 2) // 5)
+right_w = inner - left_w - 3
+
+def strip_ansi(s):
+    import re
+    return re.sub(r"\033\[[0-9;]*m", "", s)
+
+def find_logo_path():
+    import glob
+    candidates = [
+        os.path.expanduser(
+            "~/Documents/† NovaNode/∆ NovaApp/clients/nova-app/public/logo.svg"
+        ),
+        os.path.expanduser("~/.cache/ai-usage/novanode-logo.png"),
+    ]
+    candidates.extend(
+        glob.glob(
+            os.path.expanduser(
+                "~/Documents/*/NovaNode/*/clients/nova-app/public/logo.svg"
+            )
+        )
+    )
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+def load_full_logo(path):
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    cache_dir = os.path.expanduser("~/.cache/ai-usage")
+    cache_path = os.path.join(cache_dir, "novanode-full.png")
+
+    def crop_content(image):
+        px = image.load()
+        xs, ys = [], []
+        for y in range(image.height):
+            for x in range(image.width):
+                if px[x, y][3] >= 20:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return image
+        return image.crop((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+
+    try:
+        src_mtime = os.path.getmtime(path) if os.path.isfile(path) else 0
+        if os.path.isfile(cache_path) and os.path.getmtime(cache_path) >= src_mtime:
+            return Image.open(cache_path).convert("RGBA")
+
+        if path.lower().endswith(".svg"):
+            import shutil
+            import subprocess
+            import tempfile
+
+            rendered = None
+            rsvg = shutil.which("rsvg-convert")
+            if rsvg:
+                tmp_png = os.path.join(cache_dir, ".logo-render.png")
+                os.makedirs(cache_dir, exist_ok=True)
+                result = subprocess.run(
+                    [rsvg, "-w", str(LOGO_RENDER_WIDTH), "-o", tmp_png, path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if result.returncode == 0 and os.path.isfile(tmp_png):
+                    rendered = Image.open(tmp_png).convert("RGBA")
+
+            if rendered is None:
+                try:
+                    import cairosvg
+                    from io import BytesIO
+
+                    png = cairosvg.svg2png(
+                        url=path,
+                        output_width=LOGO_RENDER_WIDTH,
+                        output_height=int(LOGO_RENDER_WIDTH * 100.862 / 372.882),
+                    )
+                    rendered = Image.open(BytesIO(png)).convert("RGBA")
+                except Exception:
+                    rendered = None
+
+            if rendered is None:
+                tmp = tempfile.mkdtemp(prefix="ai-usage-logo-")
+                subprocess.run(
+                    ["qlmanage", "-t", "-s", "1200", "-o", tmp, path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                png_path = os.path.join(tmp, os.path.basename(path) + ".png")
+                if not os.path.isfile(png_path):
+                    return None
+                rendered = crop_content(Image.open(png_path).convert("RGBA"))
+
+            img = rendered
+        else:
+            img = Image.open(path).convert("RGBA")
+
+        os.makedirs(cache_dir, exist_ok=True)
+        img.save(cache_path, format="PNG")
+        return img
+    except Exception:
+        try:
+            if os.path.isfile(cache_path):
+                return Image.open(cache_path).convert("RGBA")
+        except Exception:
+            pass
+    return None
+
+def split_logo_parts(full):
+    mark_w = min(full.width, max(1, int(full.width * MARK_CROP_RATIO) + 2))
+    word_x = min(full.width - 1, int(full.width * WORD_CROP_START))
+    mark = full.crop((0, 0, mark_w, full.height))
+    word = full.crop((word_x, 0, full.width, full.height))
+
+    def crop_content(image):
+        px = image.load()
+        xs, ys = [], []
+        for y in range(image.height):
+            for x in range(image.width):
+                if px[x, y][3] >= 20:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return image
+        return image.crop((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+
+    return crop_content(mark), crop_content(word)
+
+def image_to_halfblocks(image, width, height):
+    from PIL import Image
+
+    img = image.copy()
+    img.thumbnail((width, height * 2), Image.Resampling.LANCZOS)
+    w, h = img.size
+    if h % 2:
+        padded = Image.new("RGBA", (w, h + 1), (0, 0, 0, 0))
+        padded.paste(img, (0, 0))
+        img = padded
+        h += 1
+
+    px = img.load()
+    lines = []
+    for y in range(0, h, 2):
+        parts = []
+        for x in range(w):
+            top = px[x, y]
+            bot = px[x, y + 1]
+            if top[3] < 20 and bot[3] < 20:
+                parts.append(" ")
+                continue
+            if bot[3] < 20:
+                parts.append(
+                    f"\033[38;2;{top[0]};{top[1]};{top[2]}m▀{RESET}"
+                )
+            elif top[3] < 20:
+                parts.append(
+                    f"\033[48;2;{bot[0]};{bot[1]};{bot[2]}m▀{RESET}"
+                )
+            else:
+                parts.append(
+                    f"\033[38;2;{top[0]};{top[1]};{top[2]}m"
+                    f"\033[48;2;{bot[0]};{bot[1]};{bot[2]}m▀{RESET}"
+                )
+        lines.append("".join(parts))
+
+    return [line.rstrip() for line in lines if strip_ansi(line).strip()]
+
+def boost_white(r, g, b):
+    if r >= 140 and g >= 140 and b >= 140:
+        return 255, 255, 255
+    return r, g, b
+
+def text_shaded_white(r, g, b):
+    """Bright white with subtle 3D depth from the SVG letterforms."""
+    lum = (r + g + b) / 3
+    if lum < 120:
+        return None
+    hi = int(228 + (lum / 255) * 27)
+    return (
+        min(255, hi + (r - lum) // 6),
+        min(255, hi + (g - lum) // 6),
+        min(255, hi + (b - lum) // 6),
+    )
+
+def isolate_text_pixels(image):
+    """Keep only light text strokes; drop background and non-text color."""
+    from PIL import Image
+
+    img = image.copy()
+    px = img.load()
+    for y in range(img.height):
+        for x in range(img.width):
+            r, g, b, a = px[x, y]
+            if a < 20:
+                px[x, y] = (0, 0, 0, 0)
+                continue
+            if r >= 180 and g >= 180 and b >= 180:
+                continue
+            px[x, y] = (0, 0, 0, 0)
+    return img
+
+def image_to_braille(image, char_w, char_h, whiten=True):
+    from PIL import Image
+
+    braille_base = 0x2800
+    dot_map = [
+        (0, 0, 0),
+        (0, 1, 1),
+        (0, 2, 2),
+        (0, 3, 6),
+        (1, 0, 3),
+        (1, 1, 4),
+        (1, 2, 5),
+        (1, 3, 7),
+    ]
+
+    img = image.copy()
+    if whiten:
+        img = isolate_text_pixels(img)
+    img.thumbnail((char_w * 2, char_h * 4), Image.Resampling.LANCZOS)
+    w, h = img.size
+    pad_h = (4 - h % 4) % 4
+    if pad_h:
+        padded = Image.new("RGBA", (w, h + pad_h), (0, 0, 0, 0))
+        padded.paste(img, (0, 0))
+        img = padded
+        h += pad_h
+
+    px = img.load()
+    lines = []
+    for y in range(0, h, 4):
+        row = []
+        for x in range(0, w, 2):
+            bits = 0
+            colors = []
+            for dx, dy, bit in dot_map:
+                xx, yy = x + dx, y + dy
+                if xx < w and yy < h:
+                    pixel = px[xx, yy]
+                    if pixel[3] >= 20:
+                        if whiten:
+                            shaded = text_shaded_white(*pixel[:3])
+                            if shaded is None:
+                                continue
+                            bits |= 1 << bit
+                            colors.append(shaded)
+                        else:
+                            bits |= 1 << bit
+                            colors.append(pixel[:3])
+            if bits:
+                r = sum(c[0] for c in colors) // len(colors)
+                g = sum(c[1] for c in colors) // len(colors)
+                b = sum(c[2] for c in colors) // len(colors)
+                row.append(f"\033[38;2;{r};{g};{b}m{chr(braille_base + bits)}{RESET}")
+            else:
+                row.append(" ")
+        if strip_ansi("".join(row)).strip():
+            lines.append("".join(row))
+
+    return lines
+
+def merge_logo_rows(left_lines, right_lines, gap=2, align="bottom"):
+    height = len(left_lines)
+
+    def pad(lines):
+        if align == "bottom":
+            return [""] * max(0, height - len(lines)) + lines
+        top = (height - len(lines)) // 2
+        bottom = height - len(lines) - top
+        return [""] * top + lines + [""] * bottom
+
+    left = left_lines
+    right = pad(right_lines)
+    spacer = " " * gap
+    merged = []
+    for left_line, right_line in zip(left, right):
+        if strip_ansi(right_line).strip():
+            merged.append(f"{left_line}{spacer}{right_line}".rstrip())
+        else:
+            merged.append(left_line)
+    return merged
+
+def wordmark_size(panel_w, mark_w=11, gap=2):
+    budget = max(0, panel_w - mark_w - gap)
+    if budget < 18:
+        return 0, 0
+    if budget < 26:
+        return min(budget, 22), 3
+    if budget < 34:
+        return min(budget, 28), 4
+    return min(budget, 32), 4
+
+def render_mark_lines(path, width=11, height=6):
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+
+    full = load_full_logo(path)
+    if full is None:
+        return []
+
+    mark, _word = split_logo_parts(full)
+    return image_to_halfblocks(mark, width, height)
+
+def render_wordmark_lines(path, char_w, char_h):
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+
+    full = load_full_logo(path)
+    if full is None:
+        return []
+
+    _mark, word = split_logo_parts(full)
+    return image_to_braille(word, char_w, char_h, whiten=True)
+
+def compose_logo(path, panel_w):
+    mark_w, mark_h, gap = 11, 6, 2
+    mark = render_mark_lines(path, mark_w, mark_h)
+    if not mark:
+        return []
+
+    mark_width = max(len(strip_ansi(line)) for line in mark)
+    char_w, char_h = wordmark_size(panel_w, mark_width, gap)
+    if char_w > 0 and char_h > 0:
+        word = render_wordmark_lines(path, char_w, char_h)
+        if word:
+            merged = merge_logo_rows(mark, word, gap=gap, align="bottom")
+            return [clip_line(line, panel_w) for line in merged]
+
+    word_line = f"{BOLD}{WHITE}NovaNode{RESET}"
+    out = list(mark)
+    out[-1] = clip_line(f"{out[-1]}  {word_line}", panel_w)
+    return [clip_line(line, panel_w) for line in out]
+
+def clip_line(text, max_w):
+    if len(strip_ansi(text)) <= max_w:
+        return text
+    out = []
+    visible = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "\033":
+            end = text.find("m", i)
+            if end == -1:
+                break
+            out.append(text[i : end + 1])
+            i = end + 1
+            continue
+        if visible >= max_w:
+            break
+        out.append(text[i])
+        visible += 1
+        i += 1
+    out.append(RESET)
+    return "".join(out)
+
+def wrap_line(text, max_w):
+    if not text:
+        return [""]
+    plain = strip_ansi(text)
+    if len(plain) <= max_w:
+        return [text]
+    chunks = textwrap.wrap(plain, width=max_w)
+    if plain.startswith("Claude ") or plain.startswith("/"):
+        return [f"{DIM}{chunk}{RESET}" for chunk in chunks]
+    if "Tips" in plain or "What's" in plain:
+        return [f"{ORANGE}{chunk}{RESET}" for chunk in chunks]
+    return [f"{GREEN}{chunk}{RESET}" for chunk in chunks]
+
+def expand_panel(lines, max_w):
+    out = []
+    for line in lines:
+        out.extend(wrap_line(line, max_w))
+    return out
+
+def pad_line(text, w):
+    visible = len(strip_ansi(text))
+    return text + " " * max(0, w - visible)
+
+title = f" NovaNode · AI Token Usage "
+top = f"{ORANGE}╭─{title}{'─' * max(0, inner - len(title))}╮{RESET}"
+bottom = f"{ORANGE}╰{'─' * (inner + 2)}╯{RESET}"
+
+logo_path = find_logo_path()
+logo = compose_logo(logo_path, left_w) if logo_path else []
+if not logo:
+    logo = [f"{BOLD}{WHITE}NovaNode{RESET}"]
+
+left = (
+    expand_panel(
+        [
+            f"{BOLD}{GREEN}Welcome back {name}!{RESET}",
+            "",
+        ],
+        left_w,
+    )
+    + logo
+    + expand_panel(
+        [
+            "",
+            f"{DIM}Claude {claude_v} · Codex {codex_v} · Cursor {cursor_v}{RESET}",
+            f"{DIM}{cwd}{RESET}",
+        ],
+        left_w,
+    )
+)
+
+right = expand_panel(
+    [
+        f"{ORANGE}Tips for getting started{RESET}",
+        f"{GREEN}Run {BOLD}ai-usage{RESET}{GREEN} anytime for usage{RESET}",
+        f"{GREEN}Claude · Codex · Cursor in one view{RESET}",
+        "",
+        f"{ORANGE}What's tracked{RESET}",
+        f"{GREEN}Session + weekly limits per provider{RESET}",
+        f"{GREEN}Auto · premium · billing cycle{RESET}",
+        f"{GREEN}Plan spend + custom spend{RESET}",
+        f"{DIM}/ai-usage · NovaNode dev tools{RESET}",
+    ],
+    right_w,
+)
+
+rows = max(len(left), len(right))
+print(top)
+for i in range(rows):
+    l = left[i] if i < len(left) else ""
+    r = right[i] if i < len(right) else ""
+    print(
+        f"{ORANGE}│{RESET} {pad_line(l, left_w)} {ORANGE}│{RESET} "
+        f"{pad_line(r, right_w)} {ORANGE}│{RESET}"
+    )
+print(bottom)
+print()
+PYEOF
+
+TABLE_BODY=$(python3 << PYEOF
+import re
+
+w = int("""${COL_W}""")
+
+def plain_len(s):
+    return len(re.sub(r"\*+", "", s))
+
+def cell(label, tail=""):
+    if tail:
+        gap = max(2, w - plain_len(label) - len(tail))
+        return f"{label}{' ' * gap}{tail}"
+    return f"{label}{' ' * max(1, w - plain_len(label))}"
+
+def rule():
+    return "-" * w
+
+cver = """${CVER}"""
+cxver = """${CXVER}"""
+cursor_ver = """${CURSOR_VER}"""
+cname = """${CURSOR_NAME}"""
+c5_pct = """${CLAUDE_5H_PCT_LABEL}"""
+c5_reset = """${CLAUDE_5H_RESET}"""
+c7_pct = """${CLAUDE_WEEK_PCT_LABEL}"""
+c7_reset = """${CLAUDE_WEEK_RESET}"""
+cx5_label = """${CX5_LABEL}"""
+cx5_pct = """${CX5_PCT_LABEL}"""
+cx5_reset = """${CX5_RESET_LABEL}"""
+cx7_label = """${CX7_LABEL}"""
+cx7_pct = """${CX7_PCT}"""
+cx7_reset = """${CX7_RESET}"""
+auto_pct = """${CURSOR_AUTO_PCT}"""
+prem_pct = """${CURSOR_PREM_PCT}"""
+total_pct = """${CURSOR_TOTAL_PCT}"""
+cycle_end = """${CURSOR_CYCLE_END}"""
+c5_bar = """${C5H_TB}"""
+c7_bar = """${C7D_TB}"""
+cx5_bar = """${CX5_TB}"""
+cx7_bar = """${CX7_TB}"""
+ca_bar = """${CA_TB}"""
+cp_bar = """${CP_TB}"""
+ct_bar = """${CT_TB}"""
+plan_spend = """${PLAN_SPEND}"""
+claude_custom_spend = """${CLAUDE_CUSTOM_SPEND}"""
+claude_total_spend = """${CLAUDE_TOTAL_SPEND}"""
+codex_custom_spend = """${CODEX_CUSTOM_SPEND}"""
+codex_total_spend = """${CODEX_TOTAL_SPEND}"""
+cursor_custom_spend = """${CURSOR_CUSTOM_SPEND}"""
+cursor_total_dollars = """${CURSOR_TOTAL_DOLLARS}"""
+
+rows = [
+    f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
+    f"| {rule()} | {rule()} | {rule()} |",
+    f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
+    f"| {cell(f'Session · {c5_pct} used', f'resets {c5_reset}')} | {cell(f'{cx5_label} · {cx5_pct} used', cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
+    f"| {c5_bar}{' ' * max(1, w - len(c5_bar))} | {cx5_bar}{' ' * max(1, w - len(cx5_bar))} | {ca_bar}{' ' * max(1, w - len(ca_bar))} |",
+    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
+    f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {cell(f'{cx7_label} · {cx7_pct}% used', f'resets {cx7_reset}')} | {cell(f'Premium · {prem_pct}')} |",
+    f"| {c7_bar}{' ' * max(1, w - len(c7_bar))} | {cx7_bar}{' ' * max(1, w - len(cx7_bar))} | {cp_bar}{' ' * max(1, w - len(cp_bar))} |",
+    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
+    f"| {' ' * w} | {' ' * w} | {cell(f'Total · {total_pct}', f'ends {cycle_end}')} |",
+    f"| {' ' * w} | {' ' * w} | {ct_bar}{' ' * max(1, w - len(ct_bar))} |",
+    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
+    f"| {cell('Spending')} | {cell('Spending')} | {cell('Spending')} |",
+    f"| {cell(f'Plan · {plan_spend}', f'Custom · {claude_custom_spend}')} | {cell(f'Plan · {plan_spend}', f'Custom · {codex_custom_spend}')} | {cell(f'Plan · {plan_spend}', f'Custom · {cursor_custom_spend}')} |",
+    f"| {cell(f'Total · {claude_total_spend}')} | {cell(f'Total · {codex_total_spend}')} | {cell(f'Total · {cursor_total_dollars}')} |",
+]
+print("\n".join(rows))
+PYEOF
+)
+
+SUPER_LINE=$(python3 << PYEOF
+w = int("""${LAYOUT}""") - 2
+label = "All providers"
+bar = """${SUPER_BAR}"""
+pct = """${SUPER_PCT_LABEL}"""
+super_sum = """${SUPER_SUM}"""
+summ = f"({super_sum} combined)"
+tail = f"{pct}  {summ}"
+gap = max(2, w - len(label) - len(bar) - len(tail))
+print(f"{label}  {bar}{' ' * gap}{tail}")
+PYEOF
+)
+
+SPEND_LINE=$(python3 << PYEOF
+w = int("""${LAYOUT}""") - 2
+label = "All providers"
+total = """${GRAND_SPEND_TOTAL}"""
+custom = """${CUSTOM_SPEND_TOTAL}"""
+tail = f"{total} total  ({custom} custom)"
+gap = max(2, w - len(label) - len(tail))
+print(f"{label}{' ' * gap}{tail}")
+PYEOF
+)
+
+MD=$(cat << MARKDOWN
+${TABLE_BODY}
+
+---
+
+## TOTAL DOLLARS
+
+${SPEND_LINE}
+
+---
+
+## TOTAL TOKENS
+
+**Combined load across Claude · Codex · Cursor**
+
+${SUPER_LINE}
+
+---
+
+*claude · codex · cursor*
+MARKDOWN
+)
+
+echo "$MD" | glow -w 0 - | sed 's/^  //' | LAYOUT="${LAYOUT}" python3 -c '
+import os, sys, re
+
+TARGET = 2
+WIDTH = int(os.environ.get("LAYOUT", "96")) - 2
+
+for line in sys.stdin:
+    raw = line.rstrip("\n")
+    vis = re.sub(r"\033\[[0-9;]*m", "", raw)
+    if not vis.strip():
+        print(raw)
+        continue
+    lead = len(vis) - len(vis.lstrip())
+    aligned = " " * max(0, TARGET - lead) + raw
+    vis_aligned = re.sub(r"\033\[[0-9;]*m", "", aligned)
+    if len(vis_aligned) < WIDTH:
+        aligned = aligned + " " * (WIDTH - len(vis_aligned))
+    print(aligned)
+'
+
+refresh_after_unlock "$CLAUDE_NEEDS_REFRESH" "$CODEX_NEEDS_REFRESH"
