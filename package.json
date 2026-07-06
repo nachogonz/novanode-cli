@@ -1,5 +1,5 @@
 {
-  "name": "novanode",
+  "name": "@nachogonzalez/novanode",
   "version": "1.0.0",
   "description": "AI token usage status CLI for Claude, Codex and Cursor",
   "license": "MIT",
@@ -23,7 +23,7 @@
     "novanode"
   ],
   "bin": {
-    "nn-usage": "./bin/nn-usage"
+    "nn-usage": "bin/nn-usage"
   },
   "files": [
     "bin",

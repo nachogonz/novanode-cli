@@ -25,7 +25,7 @@ installed yet. Run the `brew tap` command above first.
 ### npm (global)
 
 ```sh
-npm install -g novanode
+npm install -g @nachogonzalez/novanode
 ```
 
 Both channels install the same `nn-usage` command onto your `PATH`.
