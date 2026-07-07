@@ -151,7 +151,7 @@ render_screen() {
   local transcript_file="$3"
   local state_line="${4:-}"
   python3 - "$active" "$data" "$transcript_file" "$state_line" << 'PYEOF'
-import os, re, shutil, sys, textwrap
+import re, shutil, sys, textwrap
 
 active = sys.argv[1]
 raw = sys.argv[2]
@@ -163,16 +163,13 @@ height = max(24, size.lines)
 
 ORANGE = "\033[38;5;208m"
 GREEN = "\033[38;5;82m"
+WHITE = "\033[38;2;249;249;249m"
+GRAY_BG = "\033[48;5;237m"
 DIM = "\033[38;5;245m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
 providers = []
-
-def fmt_pct(value):
-    if value in ("", "n/a", "stale"):
-        return value or "n/a"
-    return f"{value}%"
 
 def strip_ansi(text):
     return re.sub(r"\033\[[0-9;]*m", "", text)
@@ -199,44 +196,24 @@ def fit(text, limit):
     out.append(RESET)
     return "".join(out)
 
-def pct_number(value):
-    try:
-        return float(str(value).replace("%", "").strip())
-    except Exception:
-        return None
+def fill(text, limit):
+    plain = strip_ansi(text)
+    return text + " " * max(0, limit - len(plain))
 
-def mini_bar(left, used, width=18):
-    basis = pct_number(left)
-    if basis is None:
-        basis = 100 - pct_number(used) if pct_number(used) is not None else None
-    if basis is None:
-        return f"{DIM}{'░' * width}{RESET}"
-    fill = round(max(0, min(basis, 100)) / 100 * width)
-    return f"{GREEN}{'█' * fill}{DIM}{'░' * (width - fill)}{RESET}"
-
-def box_top(title, w):
-    label = f" {title} "
-    return f"{ORANGE}╭─{label}{'─' * max(0, w - len(label) - 3)}╮{RESET}"
-
-def box_mid(text, w):
-    return f"{ORANGE}│{RESET} {fit(text, w - 4)} {ORANGE}│{RESET}"
-
-def box_bottom(w):
-    return f"{ORANGE}╰{'─' * (w - 2)}╯{RESET}"
-
-def hline(w):
-    return f"{DIM}{'─' * w}{RESET}"
+def fmt_pct(value):
+    if value in ("", "n/a", "stale"):
+        return value or "n/a"
+    return f"{value}%"
 
 for line in raw.splitlines():
     cols = line.split("\t")
     if len(cols) < 11:
         continue
     key, command, version, p1, used1, left1, reset1, p2, used2, left2, reset2 = cols[:11]
-    name = {"claude": "Claude Code", "codex": "Codex CLI", "cursor": "Cursor"}.get(key, key)
     providers.append({
         "key": key,
         "command": command,
-        "name": name,
+        "name": {"claude": "Claude Code", "codex": "Codex CLI", "cursor": "Cursor"}.get(key, key),
         "version": f"v{version}" if version != "n/a" else "not detected",
         "p1": p1,
         "used1": used1,
@@ -248,6 +225,8 @@ for line in raw.splitlines():
         "reset2": reset2,
     })
 
+selected = next((p for p in providers if p["key"] == active), providers[0] if providers else None)
+
 messages = []
 try:
     with open(transcript_file) as fh:
@@ -255,73 +234,99 @@ try:
 except Exception:
     pass
 
-active_name = next((p["name"] for p in providers if p["key"] == active), active.title())
-
-def provider_summary(provider):
-    if not provider:
-        return "usage unavailable"
-    primary = f"{provider['p1']} {fmt_pct(provider['left1'])} left"
-    secondary = f"{provider['p2']} {fmt_pct(provider['left2'])} left"
-    return f"{provider['name']} {provider['version']} · {primary} · {secondary}"
-
 def compact_provider(provider):
     if not provider:
-        return "usage unavailable"
-    selected = provider["key"] == active
-    tone = GREEN if selected else DIM
-    mark = "●" if selected else "○"
+        return f"{DIM}usage unavailable{RESET}"
+    selected_mark = "●" if provider["key"] == active else "○"
+    tone = GREEN if provider["key"] == active else DIM
     return (
-        f"{tone}{mark} {provider['key']} {provider['version']} "
+        f"{tone}{selected_mark} {provider['key']} {provider['version']} "
         f"{provider['p1']}:{fmt_pct(provider['left1'])} "
         f"{provider['p2']}:{fmt_pct(provider['left2'])}{RESET}"
     )
 
-active_provider = next((p for p in providers if p["key"] == active), None)
-chat_h = max(6, height - 11)
+def header_usage(provider):
+    if not provider:
+        return f"{DIM}usage unavailable{RESET}"
+    return (
+        f"{GREEN if provider['key'] == active else DIM}"
+        f"{provider['key']} {provider['version']}{RESET}"
+        f"{DIM} · {provider['p1']} {fmt_pct(provider['left1'])} left"
+        f" · {provider['p2']} {fmt_pct(provider['left2'])} left{RESET}"
+    )
+
+def wrap_plain(text, limit):
+    if not text:
+        return [""]
+    return textwrap.wrap(text, width=max(8, limit)) or [""]
+
+def user_block(text, limit):
+    out = []
+    for line in wrap_plain(text, limit - 2):
+        pad = max(0, limit - 2 - len(line))
+        out.append(f"{GRAY_BG}{WHITE} {line}{' ' * pad} {RESET}")
+    return out
+
+def assistant_block(text, limit):
+    return [f"{GREEN}{line}{RESET}" for line in wrap_plain(text, limit)]
+
+def think_block(text, limit):
+    return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
+
+header_inner = width - 4
+left_w = max(28, min(40, (header_inner - 3) // 2))
+right_w = header_inner - left_w - 3
+title = " NovaNode · Claude Code "
+
+header = [
+    f"{ORANGE}╭─{title}{'─' * max(0, header_inner - len(title))}╮{RESET}",
+    f"{ORANGE}│{RESET} {fill(f'{BOLD}{WHITE}NovaNode{RESET}', left_w)} {ORANGE}│{RESET} {fill(f'{BOLD}{GREEN}Chat stays here; provider CLIs run under the hood.{RESET}', right_w)} {ORANGE}│{RESET}",
+    f"{ORANGE}│{RESET} {fill(f'{DIM}AI terminal hub for Claude, Codex and Cursor{RESET}', left_w)} {ORANGE}│{RESET} {fill(f'{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}', right_w)} {ORANGE}│{RESET}",
+    f"{ORANGE}│{RESET} {fill(header_usage(selected), left_w)} {ORANGE}│{RESET} {fill(f'{DIM}Type a prompt. NovaNode captures the response back into this view.{RESET}', right_w)} {ORANGE}│{RESET}",
+    f"{ORANGE}╰{'─' * (header_inner + 2)}╯{RESET}",
+]
+
 chat_lines = []
-if messages:
-    for msg in messages:
-        wrapped = textwrap.wrap(strip_ansi(msg), max(32, width - 6)) or [""]
-        for item in wrapped:
-            if msg.startswith("You:"):
-                chat_lines.append(f"{GREEN}{item}{RESET}")
-            elif msg.startswith("NovaNode:"):
-                chat_lines.append(f"{ORANGE}{item}{RESET}")
-            else:
-                chat_lines.append(f"{DIM}{item}{RESET}")
-else:
-    chat_lines = []
+for msg in messages:
+    if msg.startswith("You:"):
+        content = msg.split("] ", 1)[-1] if "] " in msg else msg[4:].strip()
+        chat_lines.extend(user_block(content, width - 6))
+    elif msg.startswith("NovaNode:"):
+        chat_lines.extend(think_block(msg[len("NovaNode: "):], width - 6))
+    elif msg.startswith("Claude Code:"):
+        chat_lines.extend(assistant_block(msg[len("Claude Code: "):], width - 6))
+    elif msg.startswith("Codex CLI:"):
+        chat_lines.extend(assistant_block(msg[len("Codex CLI: "):], width - 6))
+    else:
+        chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
+
+chat_h = max(8, height - len(header) - 6)
+visible_chat = chat_lines[-chat_h:]
 
 print("\033[3J\033[H\033[2J", end="")
-print(box_top(f"NovaNode · {active_name}", width))
-if state_line:
-    print(box_mid(f"{ORANGE}{state_line}{RESET}", width))
-else:
-    print(box_mid(f"{BOLD}{GREEN}Welcome back. Chat stays here; provider CLIs run under the hood.{RESET}", width))
-print(box_mid(f"{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}", width))
-print(box_bottom(width))
+for line in header:
+    print(line)
 print()
 
-visible_chat = chat_lines[-chat_h:]
-top_pad = 0 if visible_chat else max(0, chat_h - 1)
-for _ in range(top_pad):
-    print()
 if visible_chat:
     for line in visible_chat:
         print("  " + fit(line, width - 4))
     for _ in range(max(0, chat_h - len(visible_chat))):
         print()
 else:
-    for _ in range(max(0, chat_h - top_pad)):
+    for _ in range(chat_h):
         print()
 
-print(hline(width))
+print(f"{DIM}{'─' * width}{RESET}")
 if providers:
     status = "  ".join(compact_provider(p) for p in providers)
 else:
     status = f"{DIM}usage unavailable{RESET}"
 print(fit(status, width))
-print(hline(width))
+if state_line:
+    print(f"{ORANGE}{state_line}{RESET}")
+else:
+    print(f"{DIM}Ready. Type a prompt and press Enter.{RESET}")
 PYEOF
 }
 
@@ -397,6 +402,7 @@ while true; do
       echo "Unknown command. Run /help."
       ;;
     *)
+      printf "\r\033[2K"
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..."
       run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
