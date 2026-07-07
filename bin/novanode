@@ -418,9 +418,10 @@ def compact_provider(provider):
         stat = "auto"
     else:
         stat = fmt_pct(provider["used1"])
-    parts = [provider["key"], stat]
+    parts = [provider["key"]]
     if model and model != stat:
         parts.append(model)
+    parts.append(stat)
     return f"{tone}{selected_mark} {' '.join(parts)}{RESET}"
 
 def header_usage(provider):
@@ -608,7 +609,7 @@ def status_row(left, right, limit):
 
 row_content = f"{GREEN}›{RESET} "
 status_left = f"{GREEN}{state_line}{RESET}" if state_line else ""
-status_right = f"{DIM}{token_status}{RESET}" if token_status else ""
+status_right = ""
 
 if providers:
     prov_status = "   ".join(compact_provider(p) for p in providers)
@@ -619,7 +620,8 @@ print(fit(status_row(status_left, status_right, width), width))
 print(border)
 print(fit(row_content, width))
 print(border)
-sys.stdout.write(fit(prov_status, width))
+token_footer = f"{DIM}{token_status}{RESET}" if token_status else ""
+sys.stdout.write(fit(status_row(prov_status, token_footer, width), width))
 
 if state_line:
     sys.stdout.write("\033[?25l")
@@ -715,8 +717,23 @@ show_model_picker() {
 models_arg() {
   printf "claude=%s|codex=%s|cursor=%s" "$model_claude" "$model_codex" "$model_cursor"
 }
+
+enter_live_screen() {
+  if [ -t 1 ]; then
+    printf "\033[?1049h\033[H\033[?25h"
+  fi
+}
+
+leave_live_screen() {
+  if [ -t 1 ]; then
+    printf "\033[?25h\033[?1049l"
+  else
+    printf "\033[?25h"
+  fi
+}
+
 TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
-trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null; printf "\033[?25h"' EXIT
+trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null; leave_live_screen' EXIT
 
 snapshot_git() {
   command -v git >/dev/null 2>&1 || return 0
@@ -836,6 +853,7 @@ read_prompt() {
   return 1
 }
 
+enter_live_screen
 render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
 
 handle_prompt() {
