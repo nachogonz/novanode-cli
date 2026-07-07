@@ -1,4 +1,4 @@
-# NovaNode
+# NovaNode CLI
 
 AI token usage status CLI for **Claude**, **Codex**, and **Cursor**.
 
