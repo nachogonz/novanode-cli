@@ -149,12 +149,14 @@ render_screen() {
   local active="$1"
   local data="$2"
   local transcript_file="$3"
-  python3 - "$active" "$data" "$transcript_file" << 'PYEOF'
+  local state_line="${4:-}"
+  python3 - "$active" "$data" "$transcript_file" "$state_line" << 'PYEOF'
 import os, re, shutil, sys, textwrap
 
 active = sys.argv[1]
 raw = sys.argv[2]
 transcript_file = sys.argv[3]
+state_line = sys.argv[4]
 size = shutil.get_terminal_size((106, 34))
 width = max(80, size.columns)
 height = max(24, size.lines)
@@ -292,14 +294,16 @@ else:
 
 print("\033[3J\033[H\033[2J", end="")
 print(box_top(f"NovaNode · {active_name}", width))
-print(box_mid(f"{BOLD}{GREEN}Welcome back. Chat stays here; provider CLIs run under the hood.{RESET}", width))
-print(box_mid(f"{DIM}{provider_summary(active_provider)}{RESET}", width))
+if state_line:
+    print(box_mid(f"{ORANGE}{state_line}{RESET}", width))
+else:
+    print(box_mid(f"{BOLD}{GREEN}Welcome back. Chat stays here; provider CLIs run under the hood.{RESET}", width))
 print(box_mid(f"{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}", width))
 print(box_bottom(width))
 print()
 
 visible_chat = chat_lines[-chat_h:]
-top_pad = 0 if visible_chat else max(0, chat_h - 3)
+top_pad = 0 if visible_chat else max(0, chat_h - 1)
 for _ in range(top_pad):
     print()
 if visible_chat:
@@ -394,6 +398,7 @@ while true; do
       ;;
     *)
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..."
       run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
       usage_data="$(load_usage)"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
