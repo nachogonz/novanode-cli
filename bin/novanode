@@ -27,11 +27,13 @@ Usage:
 
 Inside NovaNode:
   /use claude|codex|cursor  Select provider
+  /model [provider] name    Show or set the model (e.g. /model opus-4.7)
   /open                     Open selected provider CLI
   /usage                    Refresh usage summary
   /providers                Show providers
-  /approve                  Toggle auto-approve for provider edits
   /quit                     Exit (or press ESC)
+
+When a provider needs approval to edit, reply "y" to approve or "n" to skip.
 EOF
 }
 
@@ -102,12 +104,77 @@ append_prefixed() {
   done < "$file"
 }
 
+claude_stream_parser() {
+  local transcript="$1"
+  python3 -c '
+import json, sys
+transcript = sys.argv[1]
+seen_text = set()
+def emit(line):
+    with open(transcript, "a") as f:
+        f.write(line + "\n")
+def short(x):
+    if not isinstance(x, str):
+        return ""
+    x = x.strip()
+    return x[:57] + "…" if len(x) > 60 else x
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    try:
+        d = json.loads(raw)
+    except Exception:
+        continue
+    t = d.get("type", "")
+    if t == "assistant":
+        msg = d.get("message", {}) or {}
+        for item in (msg.get("content") or []):
+            it = item.get("type")
+            if it == "tool_use":
+                name = item.get("name", "tool")
+                inp = item.get("input", {}) or {}
+                arg = (
+                    inp.get("file_path")
+                    or inp.get("path")
+                    or inp.get("command")
+                    or inp.get("pattern")
+                    or inp.get("query")
+                    or inp.get("description")
+                    or ""
+                )
+                emit(f"NovaNode-tool: {name}({short(arg)})")
+            elif it == "text":
+                txt = (item.get("text") or "").strip()
+                if txt and txt not in seen_text:
+                    seen_text.add(txt)
+                    emit(f"Claude Code: {txt}")
+    elif t == "result":
+        r = (d.get("result") or "").strip()
+        if r and r not in seen_text:
+            seen_text.add(r)
+            emit(f"Claude Code: {r}")
+    elif t == "system" and d.get("subtype") == "error":
+        msg = d.get("message") or d.get("error") or ""
+        if msg:
+            emit(f"NovaNode: {msg}")
+' "$transcript"
+}
+
+codex_stream_parser() {
+  local transcript="$1"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf "Codex CLI: %s\n" "$line" >> "$transcript"
+  done
+}
+
 run_prompt() {
   local provider="$1"
   local prompt="$2"
   local transcript_file="$3"
   local approve="${4:-0}"
-  local cmd output status
+  local cmd status
 
   cmd="$(provider_cmd "$provider")"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -115,27 +182,23 @@ run_prompt() {
     return 127
   fi
 
-  output=$(mktemp "${TMPDIR:-/tmp}/novanode-response.XXXXXX")
   case "$provider" in
     claude)
-      if [ "$approve" -eq 1 ]; then
-        "$cmd" --print --permission-mode acceptEdits "$prompt" >"$output" 2>&1
-      else
-        "$cmd" --print "$prompt" >"$output" 2>&1
-      fi
-      status=$?
+      local extra=(--print --verbose --output-format stream-json)
+      [ "$approve" -eq 1 ] && extra+=(--permission-mode acceptEdits)
+      [ -n "$model_claude" ] && extra+=(--model "$model_claude")
+      "$cmd" "${extra[@]}" "$prompt" 2>/dev/null | claude_stream_parser "$transcript_file"
+      status=${PIPESTATUS[0]}
       ;;
     codex)
-      if [ "$approve" -eq 1 ]; then
-        "$cmd" exec --full-auto --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
-      else
-        "$cmd" exec --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
-      fi
-      status=$?
+      local extra=(exec --color never)
+      [ "$approve" -eq 1 ] && extra+=(--full-auto)
+      [ -n "$model_codex" ] && extra+=(--model "$model_codex")
+      "$cmd" "${extra[@]}" "$prompt" 2>&1 | codex_stream_parser "$transcript_file"
+      status=${PIPESTATUS[0]}
       ;;
     cursor)
       printf "NovaNode: Cursor CLI does not expose terminal chat responses. Use /open to launch Cursor Chat.\n" >> "$transcript_file"
-      rm -f "$output"
       return 0
       ;;
   esac
@@ -143,15 +206,13 @@ run_prompt() {
   if [ "$status" -ne 0 ]; then
     printf "NovaNode: %s exited with status %s.\n" "$provider" "$status" >> "$transcript_file"
   fi
-  append_prefixed "$(provider_label "$provider")" "$output" >> "$transcript_file"
-  rm -f "$output"
   return "$status"
 }
 
 needs_approval() {
   local file="$1"
   [ -s "$file" ] || return 1
-  tail -n 40 "$file" | grep -qEi "(need|require)s? (permission|approval|you to approve)|please approve|permission to (edit|write|modify|create|change)|approve the (edit|change|permission)|allow (me|the edit)"
+  tail -n 40 "$file" | grep -qEi "(need|require)s? (permission|approval|you to approve)|please approve|permission to (edit|write|modify|create|change)|approve the (edit|change|permission)|awaiting your approval|allow (me|the edit)"
 }
 
 load_usage() {
@@ -167,8 +228,8 @@ render_screen() {
   local data="$2"
   local transcript_file="$3"
   local state_line="${4:-}"
-  local auto_approve="${5:-0}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$auto_approve" << 'PYEOF'
+  local models="${5:-}"
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$models" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
@@ -177,7 +238,13 @@ transcript_file = sys.argv[3]
 state_line = sys.argv[4]
 script_version = sys.argv[5]
 workspace_dir = sys.argv[6]
-auto_approve = sys.argv[7] == "1"
+models_arg = sys.argv[7]
+
+models = {}
+for chunk in models_arg.split("|"):
+    if "=" in chunk:
+        k, v = chunk.split("=", 1)
+        models[k.strip()] = v.strip()
 size = shutil.get_terminal_size((106, 34))
 width = max(80, size.columns)
 height = max(24, size.lines)
@@ -260,11 +327,16 @@ def compact_provider(provider):
         return f"{DIM}usage unavailable{RESET}"
     selected_mark = "●" if provider["key"] == active else "○"
     tone = GREEN if provider["key"] == active else DIM
-    return (
-        f"{tone}{selected_mark} {provider['key']} {provider['version']} "
-        f"{provider['p1']}:{fmt_pct(provider['left1'])} "
-        f"{provider['p2']}:{fmt_pct(provider['left2'])}{RESET}"
-    )
+    model = models.get(provider["key"], "")
+    if provider["key"] == "cursor":
+        stat = "auto"
+    else:
+        stat = f"{provider['p1']}:{fmt_pct(provider['left1'])}"
+    parts = [provider["key"]]
+    if model and model != stat:
+        parts.append(model)
+    parts.append(stat)
+    return f"{tone}{selected_mark} {' '.join(parts)}{RESET}"
 
 def header_usage(provider):
     if not provider:
@@ -320,13 +392,12 @@ left_lines = wrap_block(
     ],
     left_w,
 )
-approve_state = f"{GREEN}auto-approve ON{RESET}" if auto_approve else f"{DIM}auto-approve OFF{RESET}"
 right_lines = wrap_block(
     [
         f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
         f"{DIM}/use claude · /use codex · /use cursor · /open{RESET}",
-        f"{DIM}/usage · /approve · /quit{RESET}",
-        approve_state,
+        f"{DIM}/model <name> · /usage · /quit{RESET}",
+        f"{GREEN}Approve edits with y/n when asked.{RESET}",
     ],
     right_w,
 )
@@ -343,10 +414,52 @@ header.append(box_bottom_line())
 
 chat_lines = []
 
+CHANGE_ICON = {
+    "M": "✎",
+    "A": "+",
+    "D": "-",
+    "R": "→",
+    "?": "?",
+    "!": "!",
+    "U": "⚠",
+    "C": "©",
+}
+VALID_PORC_CHARS = set(" MADRCU?!")
+
+def change_line(text, limit):
+    display = text.rstrip()
+    if not display:
+        return []
+    if (
+        len(display) >= 3
+        and display[2] == " "
+        and all(c in VALID_PORC_CHARS for c in display[:2])
+        and display[:2].strip()
+    ):
+        status = display[:2]
+        path = display[3:]
+        icon = CHANGE_ICON.get(status.strip()[:1], "◆")
+        label = f"{icon} {status.strip():<2} {path}"
+    else:
+        label = f"▸ {display.lstrip()}"
+    return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(label, limit)]
+
+def tool_line(text, limit):
+    label = f"● {text}"
+    return [f"{DIM}{line}{RESET}" for line in wrap_plain(label, limit)]
+
 for msg in messages:
     if msg.startswith("You:"):
         content = msg.split("] ", 1)[-1] if "] " in msg else msg[4:].strip()
         chat_lines.extend(user_block(content, width - 6))
+    elif msg.startswith("NovaNode-changes:"):
+        raw = msg[len("NovaNode-changes:"):]
+        if raw.startswith(" "):
+            raw = raw[1:]
+        chat_lines.extend(change_line(raw, width - 6))
+    elif msg.startswith("NovaNode-tool:"):
+        content = msg[len("NovaNode-tool:"):].strip()
+        chat_lines.extend(tool_line(content, width - 6))
     elif msg.startswith("NovaNode:"):
         chat_lines.extend(think_block(msg[len("NovaNode: "):], width - 6))
     elif msg.startswith("Claude Code:"):
@@ -356,7 +469,7 @@ for msg in messages:
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
 
-chat_h = max(8, height - len(header) - 6)
+chat_h = max(6, height - len(header) - 7)
 visible_chat = chat_lines[-chat_h:]
 
 print("\033[3J\033[H\033[2J", end="")
@@ -373,15 +486,32 @@ else:
     for _ in range(chat_h):
         print()
 
+def dock_edge(left, right):
+    return f"{ORANGE}{left}{'─' * (width - 2)}{right}{RESET}"
+
 if state_line:
-    print(f"{ORANGE}{state_line}{RESET}")
-print(f"{DIM}{'─' * width}{RESET}")
-if providers:
-    status = "  ".join(compact_provider(p) for p in providers)
+    row_content = state_line
 else:
-    status = f"{DIM}usage unavailable{RESET}"
-print(fit(status, width))
-print(f"{DIM}Ready. Type a prompt and press Enter.{RESET}")
+    row_content = f"{GREEN}›{RESET} "
+
+if providers:
+    prov_status = "   ".join(compact_provider(p) for p in providers)
+else:
+    prov_status = f"{DIM}usage unavailable{RESET}"
+footer_content = prov_status
+
+print(dock_edge("╭", "╮"))
+print(f"{ORANGE}│{RESET} {fit(row_content, width - 4)} {ORANGE}│{RESET}")
+print(dock_edge("├", "┤"))
+print(f"{ORANGE}│{RESET} {fit(footer_content, width - 4)} {ORANGE}│{RESET}")
+print(dock_edge("╰", "╯"), end="")
+
+sys.stdout.write("\n")
+if state_line:
+    sys.stdout.write("\033[?25l")
+else:
+    sys.stdout.write("\033[?25h\033[4A\r\033[4C")
+sys.stdout.flush()
 PYEOF
 }
 
@@ -407,11 +537,83 @@ case "${1:-}" in
 esac
 
 active_provider="claude"
-auto_approve=0
+model_claude="${NOVANODE_MODEL_CLAUDE:-opus-4.7}"
+model_codex="${NOVANODE_MODEL_CODEX:-gpt-5.1}"
+model_cursor="${NOVANODE_MODEL_CURSOR:-auto}"
 last_prompt=""
+awaiting_approval=0
+pending_prompt=""
 usage_data="$(load_usage)"
+
+models_arg() {
+  printf "claude=%s|codex=%s|cursor=%s" "$model_claude" "$model_codex" "$model_cursor"
+}
 TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
-trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null' EXIT
+trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null; printf "\033[?25h"' EXIT
+
+snapshot_git() {
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$WORKSPACE_DIR" status --porcelain 2>/dev/null | LC_ALL=C sort
+}
+
+diff_snapshot() {
+  local before="$1" after="$2"
+  [ "$before" = "$after" ] && return 0
+  diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") 2>/dev/null \
+    | awk '/^> /{ sub(/^> /, ""); print }'
+}
+
+run_with_activity() {
+  local provider="$1"
+  local prompt="$2"
+  local transcript_file="$3"
+  local approve="$4"
+  local before_snap
+  before_snap="$(snapshot_git)"
+
+  (
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    local prev_snap="$before_snap"
+    local curr_snap new
+    while :; do
+      if [ $((i % 3)) -eq 0 ]; then
+        curr_snap="$(snapshot_git)"
+        if [ -n "$curr_snap" ] && [ "$curr_snap" != "$prev_snap" ]; then
+          new="$(diff_snapshot "$prev_snap" "$curr_snap")"
+          if [ -n "$new" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && printf "NovaNode-changes: %s\n" "$line" >> "$transcript_file"
+            done <<< "$new"
+          fi
+          prev_snap="$curr_snap"
+        fi
+      fi
+      local frame="${frames[i % ${#frames[@]}]}"
+      render_screen "$provider" "$usage_data" "$transcript_file" "$frame $provider is working…" "$(models_arg)"
+      i=$((i + 1))
+      sleep 0.15
+    done
+  ) &
+  local spinner_pid=$!
+
+  run_prompt "$provider" "$prompt" "$transcript_file" "$approve"
+  local status=$?
+
+  kill "$spinner_pid" 2>/dev/null
+  wait "$spinner_pid" 2>/dev/null
+
+  local after_snap
+  after_snap="$(snapshot_git)"
+  local final_diff
+  final_diff="$(diff_snapshot "$before_snap" "$after_snap")"
+  if [ -n "$final_diff" ]; then
+    local stat_line
+    stat_line="$(git -C "$WORKSPACE_DIR" diff --shortstat 2>/dev/null)"
+    [ -n "$stat_line" ] && printf "NovaNode-changes: %s\n" "$stat_line" >> "$transcript_file"
+  fi
+  return "$status"
+}
 
 read_prompt() {
   local buf="" ch tail
@@ -443,12 +645,50 @@ read_prompt() {
   return 1
 }
 
-render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+
+handle_prompt() {
+  local prompt_text="$1"
+  local approve="${2:-0}"
+  local rerun=0
+  last_prompt="$prompt_text"
+  render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "⠋ $active_provider is starting…" "$(models_arg)"
+  run_with_activity "$active_provider" "$prompt_text" "$TRANSCRIPT_FILE" "$approve"
+  usage_data="$(load_usage)"
+  if [ "$approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
+    awaiting_approval=1
+    pending_prompt="$prompt_text"
+    printf "NovaNode: The provider is asking for approval. Reply y to approve and retry, or n to skip.\n" >> "$TRANSCRIPT_FILE"
+  fi
+  render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+}
 
 while true; do
-  printf "%s%s%s › " "$GREEN" "$active_provider" "$RESET"
   read_prompt || break
   input="$REPLY"
+
+  if [ "$awaiting_approval" -eq 1 ]; then
+    case "$input" in
+      y|Y|yes|YES)
+        awaiting_approval=0
+        printf "You: [%s] (y) approve\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+        handle_prompt "$pending_prompt" 1
+        pending_prompt=""
+        continue
+        ;;
+      n|N|no|NO|skip|"")
+        awaiting_approval=0
+        pending_prompt=""
+        printf "You: [%s] (n) skip\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+        render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+        continue
+        ;;
+      *)
+        awaiting_approval=0
+        pending_prompt=""
+        ;;
+    esac
+  fi
 
   case "$input" in
     $'\e')
@@ -465,21 +705,41 @@ while true; do
       usage
       ;;
     /providers)
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /usage)
       usage_data="$(load_usage)"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
-    /approve)
-      if [ "$auto_approve" -eq 1 ]; then
-        auto_approve=0
-        printf "NovaNode: auto-approve disabled.\n" >> "$TRANSCRIPT_FILE"
+    /model)
+      printf "NovaNode: models — claude=%s · codex=%s · cursor=%s\n" \
+        "$model_claude" "$model_codex" "$model_cursor" >> "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+      ;;
+    /model\ *)
+      model_args="${input#/model }"
+      read -r -a model_tokens <<< "$model_args"
+      case "${model_tokens[0]}" in
+        claude|codex|cursor)
+          target_provider="${model_tokens[0]}"
+          new_model="${model_tokens[*]:1}"
+          ;;
+        *)
+          target_provider="$active_provider"
+          new_model="$model_args"
+          ;;
+      esac
+      if [ -z "$new_model" ]; then
+        printf "NovaNode: usage — /model [provider] <model>\n" >> "$TRANSCRIPT_FILE"
       else
-        auto_approve=1
-        printf "NovaNode: auto-approve enabled. Providers may edit files without prompting.\n" >> "$TRANSCRIPT_FILE"
+        case "$target_provider" in
+          claude) model_claude="$new_model" ;;
+          codex)  model_codex="$new_model" ;;
+          cursor) model_cursor="$new_model" ;;
+        esac
+        printf "NovaNode: %s model set to %s.\n" "$target_provider" "$new_model" >> "$TRANSCRIPT_FILE"
       fi
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /open)
       printf "NovaNode: opening native %s interface.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
@@ -490,7 +750,7 @@ while true; do
       case "$next" in
         claude|codex|cursor)
           active_provider="$next"
-          render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+          render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
           ;;
         *)
           printf "NovaNode: invalid provider '%s'.\n" "$next" >> "$TRANSCRIPT_FILE"
@@ -504,35 +764,8 @@ while true; do
       ;;
     *)
       printf "\r\033[2K"
-      last_prompt="$input"
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..." "$auto_approve"
-      run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE" "$auto_approve"
-      if [ "$auto_approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
-        printf "NovaNode: approval requested. Press [a] approve once · [A] always approve · [Enter] skip.\n" >> "$TRANSCRIPT_FILE"
-        usage_data="$(load_usage)"
-        render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "Approval required — [a] once · [A] always · [Enter] skip" "$auto_approve"
-        IFS= read -rsn1 approve_key
-        case "$approve_key" in
-          a)
-            printf "You: [%s] (approved) %s\n" "$active_provider" "$last_prompt" >> "$TRANSCRIPT_FILE"
-            render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: retrying with approval..." "$auto_approve"
-            run_prompt "$active_provider" "$last_prompt" "$TRANSCRIPT_FILE" 1
-            ;;
-          A)
-            auto_approve=1
-            printf "NovaNode: auto-approve enabled for this session.\n" >> "$TRANSCRIPT_FILE"
-            printf "You: [%s] (approved) %s\n" "$active_provider" "$last_prompt" >> "$TRANSCRIPT_FILE"
-            render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: retrying with approval..." "$auto_approve"
-            run_prompt "$active_provider" "$last_prompt" "$TRANSCRIPT_FILE" 1
-            ;;
-          *)
-            printf "NovaNode: approval skipped.\n" >> "$TRANSCRIPT_FILE"
-            ;;
-        esac
-      fi
-      usage_data="$(load_usage)"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+      handle_prompt "$input" 0
       ;;
   esac
 done
