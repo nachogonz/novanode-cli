@@ -30,7 +30,8 @@ Inside NovaNode:
   /open                     Open selected provider CLI
   /usage                    Refresh usage summary
   /providers                Show providers
-  /quit                     Exit
+  /approve                  Toggle auto-approve for provider edits
+  /quit                     Exit (or press ESC)
 EOF
 }
 
@@ -105,6 +106,7 @@ run_prompt() {
   local provider="$1"
   local prompt="$2"
   local transcript_file="$3"
+  local approve="${4:-0}"
   local cmd output status
 
   cmd="$(provider_cmd "$provider")"
@@ -116,11 +118,19 @@ run_prompt() {
   output=$(mktemp "${TMPDIR:-/tmp}/novanode-response.XXXXXX")
   case "$provider" in
     claude)
-      "$cmd" --print "$prompt" >"$output" 2>&1
+      if [ "$approve" -eq 1 ]; then
+        "$cmd" --print --permission-mode acceptEdits "$prompt" >"$output" 2>&1
+      else
+        "$cmd" --print "$prompt" >"$output" 2>&1
+      fi
       status=$?
       ;;
     codex)
-      "$cmd" exec --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
+      if [ "$approve" -eq 1 ]; then
+        "$cmd" exec --full-auto --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
+      else
+        "$cmd" exec --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
+      fi
       status=$?
       ;;
     cursor)
@@ -138,6 +148,12 @@ run_prompt() {
   return "$status"
 }
 
+needs_approval() {
+  local file="$1"
+  [ -s "$file" ] || return 1
+  tail -n 40 "$file" | grep -qEi "(need|require)s? (permission|approval|you to approve)|please approve|permission to (edit|write|modify|create|change)|approve the (edit|change|permission)|allow (me|the edit)"
+}
+
 load_usage() {
   if [ ! -x "$NN_USAGE" ]; then
     echo ""
@@ -151,7 +167,8 @@ render_screen() {
   local data="$2"
   local transcript_file="$3"
   local state_line="${4:-}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" << 'PYEOF'
+  local auto_approve="${5:-0}"
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$auto_approve" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
@@ -160,6 +177,7 @@ transcript_file = sys.argv[3]
 state_line = sys.argv[4]
 script_version = sys.argv[5]
 workspace_dir = sys.argv[6]
+auto_approve = sys.argv[7] == "1"
 size = shutil.get_terminal_size((106, 34))
 width = max(80, size.columns)
 height = max(24, size.lines)
@@ -302,12 +320,13 @@ left_lines = wrap_block(
     ],
     left_w,
 )
+approve_state = f"{GREEN}auto-approve ON{RESET}" if auto_approve else f"{DIM}auto-approve OFF{RESET}"
 right_lines = wrap_block(
     [
         f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
         f"{DIM}/use claude · /use codex · /use cursor · /open{RESET}",
-        f"{DIM}/usage · /quit{RESET}",
-        f"{GREEN}Usage stays inline; chat stays open.{RESET}",
+        f"{DIM}/usage · /approve · /quit{RESET}",
+        approve_state,
     ],
     right_w,
 )
@@ -388,6 +407,8 @@ case "${1:-}" in
 esac
 
 active_provider="claude"
+auto_approve=0
+last_prompt=""
 usage_data="$(load_usage)"
 TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
 trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null' EXIT
@@ -422,7 +443,7 @@ read_prompt() {
   return 1
 }
 
-render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
 
 while true; do
   printf "%s%s%s › " "$GREEN" "$active_provider" "$RESET"
@@ -444,11 +465,21 @@ while true; do
       usage
       ;;
     /providers)
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
       ;;
     /usage)
       usage_data="$(load_usage)"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
+      ;;
+    /approve)
+      if [ "$auto_approve" -eq 1 ]; then
+        auto_approve=0
+        printf "NovaNode: auto-approve disabled.\n" >> "$TRANSCRIPT_FILE"
+      else
+        auto_approve=1
+        printf "NovaNode: auto-approve enabled. Providers may edit files without prompting.\n" >> "$TRANSCRIPT_FILE"
+      fi
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
       ;;
     /open)
       printf "NovaNode: opening native %s interface.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
@@ -459,7 +490,7 @@ while true; do
       case "$next" in
         claude|codex|cursor)
           active_provider="$next"
-          render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+          render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
           ;;
         *)
           printf "NovaNode: invalid provider '%s'.\n" "$next" >> "$TRANSCRIPT_FILE"
@@ -473,11 +504,35 @@ while true; do
       ;;
     *)
       printf "\r\033[2K"
+      last_prompt="$input"
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..."
-      run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..." "$auto_approve"
+      run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE" "$auto_approve"
+      if [ "$auto_approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
+        printf "NovaNode: approval requested. Press [a] approve once · [A] always approve · [Enter] skip.\n" >> "$TRANSCRIPT_FILE"
+        usage_data="$(load_usage)"
+        render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "Approval required — [a] once · [A] always · [Enter] skip" "$auto_approve"
+        IFS= read -rsn1 approve_key
+        case "$approve_key" in
+          a)
+            printf "You: [%s] (approved) %s\n" "$active_provider" "$last_prompt" >> "$TRANSCRIPT_FILE"
+            render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: retrying with approval..." "$auto_approve"
+            run_prompt "$active_provider" "$last_prompt" "$TRANSCRIPT_FILE" 1
+            ;;
+          A)
+            auto_approve=1
+            printf "NovaNode: auto-approve enabled for this session.\n" >> "$TRANSCRIPT_FILE"
+            printf "You: [%s] (approved) %s\n" "$active_provider" "$last_prompt" >> "$TRANSCRIPT_FILE"
+            render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: retrying with approval..." "$auto_approve"
+            run_prompt "$active_provider" "$last_prompt" "$TRANSCRIPT_FILE" 1
+            ;;
+          *)
+            printf "NovaNode: approval skipped.\n" >> "$TRANSCRIPT_FILE"
+            ;;
+        esac
+      fi
       usage_data="$(load_usage)"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$auto_approve"
       ;;
   esac
 done

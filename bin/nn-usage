@@ -1299,7 +1299,7 @@ def pad_line(text, w):
     visible = len(strip_ansi(text))
     return text + " " * max(0, w - visible)
 
-title = f" NovaNode · AI Token Usage "
+title = f" NovaNode · Token Usage "
 top = f"{ORANGE}╭─{title}{'─' * max(0, inner - len(title))}╮{RESET}"
 bottom = f"{ORANGE}╰{'─' * (inner + 2)}╯{RESET}"
 
