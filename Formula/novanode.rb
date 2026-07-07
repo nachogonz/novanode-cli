@@ -2,7 +2,7 @@ class Novanode < Formula
   desc "AI token usage status CLI for Claude, Codex and Cursor"
   homepage "https://github.com/nachogonz/novanode-resgistry#readme"
   url "https://registry.npmjs.org/@nakdev-npm/novanode/-/novanode-1.0.4.tgz"
-  sha256 "06d7a65f1d862006f75a223babcb8374ffb6866187d44d2badbfe5a717072700"
+  sha256 "7c287531ce68224c9b47be0e117104476199183814708b022ea2f71c0292d2db"
   license "MIT"
 
   depends_on "python@3.12"
