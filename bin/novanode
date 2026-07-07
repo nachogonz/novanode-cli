@@ -469,25 +469,20 @@ for msg in messages:
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
 
-chat_h = max(6, height - len(header) - 7)
+chat_h = max(6, height - len(header) - 6)
 visible_chat = chat_lines[-chat_h:]
 
-print("\033[3J\033[H\033[2J", end="")
+sys.stdout.write("\033[H\033[2J")
 for line in header:
     print(line)
 print()
 
-if visible_chat:
-    for line in visible_chat:
-        print("  " + fit(line, width - 4))
-    for _ in range(max(0, chat_h - len(visible_chat))):
-        print()
-else:
-    for _ in range(chat_h):
-        print()
+for line in visible_chat:
+    print("  " + fit(line, width - 4))
+for _ in range(max(0, chat_h - len(visible_chat))):
+    print()
 
-def dock_edge(left, right):
-    return f"{ORANGE}{left}{'─' * (width - 2)}{right}{RESET}"
+border = f"{ORANGE}{'─' * width}{RESET}"
 
 if state_line:
     row_content = state_line
@@ -498,19 +493,16 @@ if providers:
     prov_status = "   ".join(compact_provider(p) for p in providers)
 else:
     prov_status = f"{DIM}usage unavailable{RESET}"
-footer_content = prov_status
 
-print(dock_edge("╭", "╮"))
-print(f"{ORANGE}│{RESET} {fit(row_content, width - 4)} {ORANGE}│{RESET}")
-print(dock_edge("├", "┤"))
-print(f"{ORANGE}│{RESET} {fit(footer_content, width - 4)} {ORANGE}│{RESET}")
-print(dock_edge("╰", "╯"), end="")
+print(border)
+print(fit(row_content, width))
+print(border)
+sys.stdout.write(fit(prov_status, width))
 
-sys.stdout.write("\n")
 if state_line:
     sys.stdout.write("\033[?25l")
 else:
-    sys.stdout.write("\033[?25h\033[4A\r\033[4C")
+    sys.stdout.write("\r\033[2A\033[2C\033[?25h")
 sys.stdout.flush()
 PYEOF
 }
@@ -537,8 +529,8 @@ case "${1:-}" in
 esac
 
 active_provider="claude"
-model_claude="${NOVANODE_MODEL_CLAUDE:-opus-4.7}"
-model_codex="${NOVANODE_MODEL_CODEX:-gpt-5.1}"
+model_claude="${NOVANODE_MODEL_CLAUDE:-}"
+model_codex="${NOVANODE_MODEL_CODEX:-}"
 model_cursor="${NOVANODE_MODEL_CURSOR:-auto}"
 last_prompt=""
 awaiting_approval=0
@@ -563,6 +555,15 @@ diff_snapshot() {
     | awk '/^> /{ sub(/^> /, ""); print }'
 }
 
+kill_process_tree() {
+  local pid="$1"
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    kill_process_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null
+}
+
 run_with_activity() {
   local provider="$1"
   local prompt="$2"
@@ -571,12 +572,15 @@ run_with_activity() {
   local before_snap
   before_snap="$(snapshot_git)"
 
+  ( run_prompt "$provider" "$prompt" "$transcript_file" "$approve" < /dev/null ) &
+  local run_pid=$!
+
   (
     local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local i=0
     local prev_snap="$before_snap"
     local curr_snap new
-    while :; do
+    while kill -0 "$run_pid" 2>/dev/null; do
       if [ $((i % 3)) -eq 0 ]; then
         curr_snap="$(snapshot_git)"
         if [ -n "$curr_snap" ] && [ "$curr_snap" != "$prev_snap" ]; then
@@ -590,18 +594,30 @@ run_with_activity() {
         fi
       fi
       local frame="${frames[i % ${#frames[@]}]}"
-      render_screen "$provider" "$usage_data" "$transcript_file" "$frame $provider is working…" "$(models_arg)"
+      render_screen "$provider" "$usage_data" "$transcript_file" "$frame $provider is working… (esc to cancel)" "$(models_arg)"
       i=$((i + 1))
       sleep 0.15
     done
   ) &
-  local spinner_pid=$!
+  local anim_pid=$!
 
-  run_prompt "$provider" "$prompt" "$transcript_file" "$approve"
+  local cancelled=0
+  local key
+  while kill -0 "$run_pid" 2>/dev/null; do
+    if IFS= read -rsn1 -t 1 key 2>/dev/null; then
+      if [ "$key" = $'\e' ]; then
+        cancelled=1
+        printf "NovaNode: run cancelled (ESC). Provider process terminated.\n" >> "$transcript_file"
+        kill_process_tree "$run_pid"
+        break
+      fi
+    fi
+  done
+
+  kill "$anim_pid" 2>/dev/null
+  wait "$anim_pid" 2>/dev/null
+  wait "$run_pid" 2>/dev/null
   local status=$?
-
-  kill "$spinner_pid" 2>/dev/null
-  wait "$spinner_pid" 2>/dev/null
 
   local after_snap
   after_snap="$(snapshot_git)"
@@ -612,11 +628,12 @@ run_with_activity() {
     stat_line="$(git -C "$WORKSPACE_DIR" diff --shortstat 2>/dev/null)"
     [ -n "$stat_line" ] && printf "NovaNode-changes: %s\n" "$stat_line" >> "$transcript_file"
   fi
+  [ "$cancelled" -eq 1 ] && return 130
   return "$status"
 }
 
 read_prompt() {
-  local buf="" ch tail
+  local buf="" ch
   while IFS= read -rsn1 ch; do
     if [ -z "$ch" ]; then
       printf "\n"
@@ -624,12 +641,11 @@ read_prompt() {
       return 0
     fi
     if [ "$ch" = $'\e' ]; then
-      if IFS= read -rsn2 -t 0.05 tail; then
-        continue
-      fi
-      printf "\n"
-      REPLY=$'\e'
-      return 0
+      while [ -n "$buf" ]; do
+        buf="${buf%?}"
+        printf "\b \b"
+      done
+      continue
     fi
     if [ "$ch" = $'\x7f' ] || [ "$ch" = $'\b' ]; then
       if [ -n "$buf" ]; then
@@ -650,12 +666,12 @@ render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_a
 handle_prompt() {
   local prompt_text="$1"
   local approve="${2:-0}"
-  local rerun=0
   last_prompt="$prompt_text"
   render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "⠋ $active_provider is starting…" "$(models_arg)"
   run_with_activity "$active_provider" "$prompt_text" "$TRANSCRIPT_FILE" "$approve"
+  local run_status=$?
   usage_data="$(load_usage)"
-  if [ "$approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
+  if [ "$run_status" -ne 130 ] && [ "$approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
     awaiting_approval=1
     pending_prompt="$prompt_text"
     printf "NovaNode: The provider is asking for approval. Reply y to approve and retry, or n to skip.\n" >> "$TRANSCRIPT_FILE"
@@ -691,9 +707,6 @@ while true; do
   fi
 
   case "$input" in
-    $'\e')
-      break
-      ;;
     "")
       continue
       ;;
