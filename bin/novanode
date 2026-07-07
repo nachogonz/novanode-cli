@@ -7,6 +7,7 @@ WORKSPACE_DIR="$(pwd)"
 
 ORANGE=$'\033[38;5;208m'
 GREEN=$'\033[38;5;82m'
+RED=$'\033[38;5;196m'
 DIM=$'\033[38;5;245m'
 BOLD=$'\033[1m'
 RESET=$'\033[0m'
@@ -163,10 +164,52 @@ for raw in sys.stdin:
 
 codex_stream_parser() {
   local transcript="$1"
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    printf "Codex CLI: %s\n" "$line" >> "$transcript"
-  done
+  python3 -c '
+import sys
+
+transcript = sys.argv[1]
+metadata_keys = {
+    "workdir", "model", "provider", "approval", "sandbox",
+    "reasoning effort", "reasoning summaries", "session id",
+}
+skip_user_lines = 0
+seen_text = set()
+
+def emit(line):
+    with open(transcript, "a") as f:
+        f.write(line + "\n")
+
+for raw in sys.stdin:
+    line = raw.rstrip("\n")
+    stripped = line.strip()
+    if not stripped:
+        continue
+
+    lower = stripped.lower()
+    if lower.startswith("model:"):
+        model = stripped.split(":", 1)[1].strip()
+        if model:
+            emit(f"NovaNode-model: codex={model}")
+        continue
+    if (
+        stripped == "--------"
+        or lower == "assistant"
+        or lower == "user"
+        or lower.startswith("reading additional input")
+        or lower.startswith("openai codex")
+        or any(lower.startswith(f"{key}:") for key in metadata_keys)
+    ):
+        if lower == "user":
+            skip_user_lines = 1
+        continue
+    if skip_user_lines:
+        skip_user_lines -= 1
+        continue
+
+    if stripped not in seen_text:
+        seen_text.add(stripped)
+        emit(f"Codex CLI: {stripped}")
+' "$transcript"
 }
 
 run_prompt() {
@@ -251,6 +294,7 @@ height = max(24, size.lines)
 
 ORANGE = "\033[38;5;208m"
 GREEN = "\033[38;5;82m"
+RED = "\033[38;5;196m"
 WHITE = "\033[38;2;249;249;249m"
 GRAY_BG = "\033[48;5;237m"
 DIM = "\033[38;5;245m"
@@ -293,6 +337,12 @@ def fmt_pct(value):
         return value or "n/a"
     return f"{value}%"
 
+def pct_number(value):
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except Exception:
+        return None
+
 for line in raw.splitlines():
     cols = line.split("\t")
     if len(cols) < 11:
@@ -322,20 +372,31 @@ try:
 except Exception:
     pass
 
+for msg in messages:
+    if msg.startswith("NovaNode-model:"):
+        payload = msg[len("NovaNode-model:"):].strip()
+        if "=" in payload:
+            key, value = payload.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value and not models.get(key):
+                models[key] = value
+
 def compact_provider(provider):
     if not provider:
         return f"{DIM}usage unavailable{RESET}"
     selected_mark = "●" if provider["key"] == active else "○"
-    tone = GREEN if provider["key"] == active else DIM
-    model = models.get(provider["key"], "")
+    used = pct_number(provider["used1"])
+    exhausted = used is not None and used >= 100
+    tone = RED if exhausted else (GREEN if provider["key"] == active else DIM)
+    model = models.get(provider["key"], "") or "default"
     if provider["key"] == "cursor":
         stat = "auto"
     else:
-        stat = f"{provider['p1']}:{fmt_pct(provider['left1'])}"
-    parts = [provider["key"]]
+        stat = fmt_pct(provider["used1"])
+    parts = [provider["key"], stat]
     if model and model != stat:
         parts.append(model)
-    parts.append(stat)
     return f"{tone}{selected_mark} {' '.join(parts)}{RESET}"
 
 def header_usage(provider):
@@ -448,6 +509,18 @@ def tool_line(text, limit):
     label = f"● {text}"
     return [f"{DIM}{line}{RESET}" for line in wrap_plain(label, limit)]
 
+def picker_line(text, limit):
+    trimmed = text.rstrip()
+    if not trimmed:
+        return [""]
+    if trimmed.startswith("Select model"):
+        return [f"{BOLD}{GREEN}{trimmed}{RESET}"]
+    if trimmed.startswith("Type a number"):
+        return [f"{DIM}{line}{RESET}" for line in wrap_plain(trimmed, limit)]
+    if trimmed.lstrip().startswith("✔"):
+        return [f"{GREEN}{trimmed}{RESET}"]
+    return [f"{ORANGE}{trimmed}{RESET}"]
+
 for msg in messages:
     if msg.startswith("You:"):
         content = msg.split("] ", 1)[-1] if "] " in msg else msg[4:].strip()
@@ -460,12 +533,19 @@ for msg in messages:
     elif msg.startswith("NovaNode-tool:"):
         content = msg[len("NovaNode-tool:"):].strip()
         chat_lines.extend(tool_line(content, width - 6))
+    elif msg.startswith("NovaNode-picker:"):
+        content = msg[len("NovaNode-picker:"):]
+        if content.startswith(" "):
+            content = content[1:]
+        chat_lines.extend(picker_line(content, width - 6))
     elif msg.startswith("NovaNode:"):
         chat_lines.extend(think_block(msg[len("NovaNode: "):], width - 6))
     elif msg.startswith("Claude Code:"):
         chat_lines.extend(assistant_block(msg[len("Claude Code: "):], width - 6))
     elif msg.startswith("Codex CLI:"):
         chat_lines.extend(assistant_block(msg[len("Codex CLI: "):], width - 6))
+    elif msg.startswith("NovaNode-model:"):
+        continue
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
 
@@ -535,7 +615,60 @@ model_cursor="${NOVANODE_MODEL_CURSOR:-auto}"
 last_prompt=""
 awaiting_approval=0
 pending_prompt=""
+awaiting_model=0
+model_picker_provider=""
+model_picker_options=()
 usage_data="$(load_usage)"
+
+show_model_picker() {
+  local provider="$1"
+  local current="" opt id desc marker i
+  local -a opts
+  case "$provider" in
+    claude)
+      current="$model_claude"
+      opts=(
+        "default|Use claude CLI default"
+        "sonnet|Sonnet — balanced everyday choice"
+        "opus|Opus — most capable for complex work"
+        "haiku|Haiku — fastest for quick answers"
+      )
+      ;;
+    codex)
+      current="$model_codex"
+      opts=(
+        "default|Use codex CLI default"
+        "gpt-5-codex|GPT-5 Codex"
+        "gpt-5|GPT-5"
+      )
+      ;;
+    cursor)
+      current="$model_cursor"
+      opts=(
+        "auto|Auto (Cursor manages routing)"
+      )
+      ;;
+  esac
+  awaiting_model=1
+  model_picker_provider="$provider"
+  model_picker_options=("${opts[@]}")
+  {
+    printf "NovaNode-picker: Select model for %s\n" "$provider"
+    i=1
+    for opt in "${opts[@]}"; do
+      id="${opt%%|*}"
+      desc="${opt#*|}"
+      if { [ -z "$current" ] && [ "$id" = "default" ]; } || [ "$id" = "$current" ]; then
+        marker="✔ "
+      else
+        marker="  "
+      fi
+      printf "NovaNode-picker: %s%d. %s — %s\n" "$marker" "$i" "$id" "$desc"
+      i=$((i + 1))
+    done
+    printf "NovaNode-picker: Type a number and press Enter · anything else to cancel.\n"
+  } >> "$TRANSCRIPT_FILE"
+}
 
 models_arg() {
   printf "claude=%s|codex=%s|cursor=%s" "$model_claude" "$model_codex" "$model_cursor"
@@ -683,6 +816,32 @@ while true; do
   read_prompt || break
   input="$REPLY"
 
+  if [ "$awaiting_model" -eq 1 ]; then
+    awaiting_model=0
+    picker_count="${#model_picker_options[@]}"
+    if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$picker_count" ]; then
+      chosen="${model_picker_options[input-1]}"
+      chosen_id="${chosen%%|*}"
+      if [ "$chosen_id" = "default" ]; then
+        new_model=""
+      else
+        new_model="$chosen_id"
+      fi
+      case "$model_picker_provider" in
+        claude) model_claude="$new_model" ;;
+        codex)  model_codex="$new_model" ;;
+        cursor) model_cursor="$new_model" ;;
+      esac
+      printf "NovaNode: %s model set to %s.\n" "$model_picker_provider" "${new_model:-default}" >> "$TRANSCRIPT_FILE"
+    else
+      printf "NovaNode: model selection cancelled.\n" >> "$TRANSCRIPT_FILE"
+    fi
+    model_picker_provider=""
+    model_picker_options=()
+    render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+    continue
+  fi
+
   if [ "$awaiting_approval" -eq 1 ]; then
     case "$input" in
       y|Y|yes|YES)
@@ -725,8 +884,7 @@ while true; do
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /model)
-      printf "NovaNode: models — claude=%s · codex=%s · cursor=%s\n" \
-        "$model_claude" "$model_codex" "$model_cursor" >> "$TRANSCRIPT_FILE"
+      show_model_picker "$active_provider"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /model\ *)
@@ -743,7 +901,7 @@ while true; do
           ;;
       esac
       if [ -z "$new_model" ]; then
-        printf "NovaNode: usage — /model [provider] <model>\n" >> "$TRANSCRIPT_FILE"
+        show_model_picker "$target_provider"
       else
         case "$target_provider" in
           claude) model_claude="$new_model" ;;
