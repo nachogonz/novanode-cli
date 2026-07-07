@@ -241,6 +241,7 @@ image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".heic"
 prompt = prompt.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
 prompt = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ufffd]", "", prompt)
 prompt = re.sub(r"^\s*\?+\s*", "", prompt)
+prompt = re.sub(r"\[Image #[0-9]+\]\s*", "", prompt)
 
 def looks_like_pending_image_path(value):
     lowered = value.lower()
@@ -290,6 +291,12 @@ while index < len(prompt):
         out.append(f"[Image #{image_count}]")
         last = best[1]
         index = best[1]
+    elif looks_like_pending_image_path(prompt[start:]):
+        out.append(prompt[last:start])
+        image_count += 1
+        out.append(f"[Image #{image_count}]")
+        last = len(prompt)
+        index = len(prompt)
     else:
         index = start + 1
 out.append(prompt[last:])
@@ -1088,10 +1095,10 @@ read_prompt() {
     return $?
   fi
   redraw_prompt_input() {
-    local cols max plain_len pad colored
+    local cols max colored
     rendered="$(display_prompt_input "$buf")"
     cols="$(tput cols 2>/dev/null || printf 80)"
-    max=$((cols - 6))
+    max=$((cols - 4))
     if [ "$max" -lt 20 ]; then
       max=20
     fi
@@ -1099,12 +1106,7 @@ read_prompt() {
       rendered="…${rendered: -$((max - 1))}"
     fi
     colored="$(color_input_display "$rendered")"
-    plain_len=${#rendered}
-    pad=$((cols - plain_len - 4))
-    if [ "$pad" -lt 1 ]; then
-      pad=1
-    fi
-    printf "\r\033[2K%s %s› %s%*s %s" "$GRAY_BG" "$GREEN" "$colored" "$pad" "" "$RESET"
+    printf "\r\033[2K%s› %s%s" "$GREEN" "$colored" "$RESET"
   }
   normalize_literal_paste_markers() {
     local before middle after rest
