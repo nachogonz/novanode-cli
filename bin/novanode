@@ -222,6 +222,9 @@ def box_mid(text, w):
 def box_bottom(w):
     return f"{ORANGE}╰{'─' * (w - 2)}╯{RESET}"
 
+def hline(w):
+    return f"{DIM}{'─' * w}{RESET}"
+
 for line in raw.splitlines():
     cols = line.split("\t")
     if len(cols) < 11:
@@ -250,71 +253,71 @@ try:
 except Exception:
     pass
 
-left_w = max(38, min(46, (width * 2) // 5))
-gap = 2
-right_w = width - left_w - gap
-body_h = max(12, height - 9)
-
-left_lines = []
-if not providers:
-    left_lines.extend([
-        f"{DIM}Usage unavailable.{RESET}",
-        f"{DIM}Run nn-usage to refresh provider state.{RESET}",
-    ])
-else:
-    for p in providers:
-        selected = p["key"] == active
-        bullet = "●" if selected else " "
-        tone = GREEN if selected else DIM
-        left_lines.append(f"{tone}{bullet} {p['name']}{RESET}")
-        left_lines.append(f"  {DIM}{p['version']} · `{p['command']}`{RESET}")
-        left_lines.append(f"  {p['p1']:<8} {mini_bar(p['left1'], p['used1'], 12)} {fmt_pct(p['left1'])} left")
-        left_lines.append(f"  {DIM}{fmt_pct(p['used1'])} used · {p['reset1']}{RESET}")
-        left_lines.append(f"  {p['p2']:<8} {mini_bar(p['left2'], p['used2'], 12)} {fmt_pct(p['left2'])} left")
-        left_lines.append(f"  {DIM}{fmt_pct(p['used2'])} used · {p['reset2']}{RESET}")
-        left_lines.append("")
-
 active_name = next((p["name"] for p in providers if p["key"] == active), active.title())
-right_lines = [
-    f"{BOLD}{GREEN}{active_name} chat lane{RESET}",
-    f"{DIM}Type here. NovaNode captures the response back into this panel.{RESET}",
-    "",
-]
+
+def provider_summary(provider):
+    if not provider:
+        return "usage unavailable"
+    primary = f"{provider['p1']} {fmt_pct(provider['left1'])} left"
+    secondary = f"{provider['p2']} {fmt_pct(provider['left2'])} left"
+    return f"{provider['name']} {provider['version']} · {primary} · {secondary}"
+
+def compact_provider(provider):
+    if not provider:
+        return "usage unavailable"
+    selected = provider["key"] == active
+    tone = GREEN if selected else DIM
+    mark = "●" if selected else "○"
+    return (
+        f"{tone}{mark} {provider['key']} {provider['version']} "
+        f"{provider['p1']}:{fmt_pct(provider['left1'])} "
+        f"{provider['p2']}:{fmt_pct(provider['left2'])}{RESET}"
+    )
+
+active_provider = next((p for p in providers if p["key"] == active), None)
+chat_h = max(6, height - 11)
+chat_lines = []
 if messages:
-    for msg in messages[-max(4, body_h - 6):]:
-        wrapped = textwrap.wrap(strip_ansi(msg), max(24, right_w - 6)) or [""]
+    for msg in messages:
+        wrapped = textwrap.wrap(strip_ansi(msg), max(32, width - 6)) or [""]
         for item in wrapped:
             if msg.startswith("You:"):
-                right_lines.append(f"{GREEN}{item}{RESET}")
+                chat_lines.append(f"{GREEN}{item}{RESET}")
             elif msg.startswith("NovaNode:"):
-                right_lines.append(f"{ORANGE}{item}{RESET}")
+                chat_lines.append(f"{ORANGE}{item}{RESET}")
             else:
-                right_lines.append(f"{DIM}{item}{RESET}")
+                chat_lines.append(f"{DIM}{item}{RESET}")
 else:
-    right_lines.extend([
-        f"{DIM}No messages yet.{RESET}",
-        f"{DIM}Start with a prompt, or switch models with /use codex.{RESET}",
-    ])
+    chat_lines = []
 
 print("\033[3J\033[H\033[2J", end="")
-print(box_top("NovaNode · AI Terminal", width))
-print(box_mid(f"{BOLD}{GREEN}One terminal, three providers, usage visible before every prompt.{RESET}", width))
+print(box_top(f"NovaNode · {active_name}", width))
+print(box_mid(f"{BOLD}{GREEN}Welcome back. Chat stays here; provider CLIs run under the hood.{RESET}", width))
+print(box_mid(f"{DIM}{provider_summary(active_provider)}{RESET}", width))
 print(box_mid(f"{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}", width))
 print(box_bottom(width))
 print()
 
-left_title = box_top("Models", left_w)
-right_title = box_top("Chat", right_w)
-print(left_title + " " * gap + right_title)
-for i in range(body_h):
-    l = left_lines[i] if i < len(left_lines) else ""
-    r = right_lines[i] if i < len(right_lines) else ""
-    print(box_mid(l, left_w) + " " * gap + box_mid(r, right_w))
-print(box_bottom(left_w) + " " * gap + box_bottom(right_w))
-print()
-print(box_top("Input", width))
-print(box_mid(f"{DIM}selected:{RESET} {GREEN}{active}{RESET}  {DIM}press enter after your prompt; /help for commands{RESET}", width))
-print(box_bottom(width))
+visible_chat = chat_lines[-chat_h:]
+top_pad = 0 if visible_chat else max(0, chat_h - 3)
+for _ in range(top_pad):
+    print()
+if visible_chat:
+    for line in visible_chat:
+        print("  " + fit(line, width - 4))
+    for _ in range(max(0, chat_h - len(visible_chat))):
+        print()
+else:
+    for _ in range(max(0, chat_h - top_pad)):
+        print()
+
+print(hline(width))
+if providers:
+    status = "  ".join(compact_provider(p) for p in providers)
+else:
+    status = f"{DIM}usage unavailable{RESET}"
+print(fit(status, width))
+print(hline(width))
 PYEOF
 }
 
@@ -347,7 +350,7 @@ trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null' EXIT
 render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
 
 while true; do
-  printf "%snovanode%s:%s%s%s> " "$ORANGE" "$RESET" "$GREEN" "$active_provider" "$RESET"
+  printf "%s%s%s › " "$GREEN" "$active_provider" "$RESET"
   IFS= read -r input || break
 
   case "$input" in
@@ -362,12 +365,10 @@ while true; do
       usage
       ;;
     /providers)
-      printf "NovaNode: refreshed provider view.\n" >> "$TRANSCRIPT_FILE"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
       ;;
     /usage)
       usage_data="$(load_usage)"
-      printf "NovaNode: refreshed usage snapshot.\n" >> "$TRANSCRIPT_FILE"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
       ;;
     /open)
@@ -379,7 +380,6 @@ while true; do
       case "$next" in
         claude|codex|cursor)
           active_provider="$next"
-          printf "NovaNode: switched provider to %s.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
           render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
           ;;
         *)
@@ -394,8 +394,6 @@ while true; do
       ;;
     *)
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
-      printf "NovaNode: %s is thinking...\n" "$active_provider" >> "$TRANSCRIPT_FILE"
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
       run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
       usage_data="$(load_usage)"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
