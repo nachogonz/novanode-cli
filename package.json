@@ -1,7 +1,7 @@
 {
   "name": "@nakdev-npm/novanode",
   "version": "1.0.5",
-  "description": "AI token usage status CLI for Claude, Codex and Cursor",
+  "description": "Novanode AI token usage status CLI for Claude, Codex and Cursor",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
   "homepage": "https://github.com/nachogonz/novanode-resgistry#readme",
