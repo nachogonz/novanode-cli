@@ -924,9 +924,9 @@ def text_shaded_white(r, g, b):
         return None
     hi = int(228 + (lum / 255) * 27)
     return (
-        min(255, hi + (r - lum) // 6),
-        min(255, hi + (g - lum) // 6),
-        min(255, hi + (b - lum) // 6),
+        int(min(255, hi + (r - lum) // 6)),
+        int(min(255, hi + (g - lum) // 6)),
+        int(min(255, hi + (b - lum) // 6)),
     )
 
 def isolate_text_pixels(image):
@@ -994,9 +994,9 @@ def image_to_braille(image, char_w, char_h, whiten=True):
                             bits |= 1 << bit
                             colors.append(pixel[:3])
             if bits:
-                r = sum(c[0] for c in colors) // len(colors)
-                g = sum(c[1] for c in colors) // len(colors)
-                b = sum(c[2] for c in colors) // len(colors)
+                r = int(sum(c[0] for c in colors) // len(colors))
+                g = int(sum(c[1] for c in colors) // len(colors))
+                b = int(sum(c[2] for c in colors) // len(colors))
                 row.append(f"\033[38;2;{r};{g};{b}m{chr(braille_base + bits)}{RESET}")
             else:
                 row.append(" ")
@@ -1136,7 +1136,7 @@ right_w = header_inner - left_w - 3
 title = f" NovaNode · Terminal · v{script_version} "
 
 def box_top_line():
-    return f"{ORANGE}╭─{title}{'─' * max(0, header_inner - len(title))}╮{RESET}"
+    return f"{ORANGE}╭─{title}{'─' * max(0, header_inner + 1 - len(title))}╮{RESET}"
 
 def box_bottom_line():
     return f"{ORANGE}╰{'─' * (header_inner + 2)}╯{RESET}"
