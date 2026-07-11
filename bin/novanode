@@ -747,8 +747,391 @@ def assistant_block(text, limit):
 def think_block(text, limit):
     return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
 
+import os as _os
+
+MARK_CROP_RATIO = 85 / 373
+WORD_CROP_START = 100 / 373
+LOGO_RENDER_WIDTH = 960
+
+def find_logo_path():
+    import glob
+    candidates = [
+        _os.path.expanduser(
+            "~/Documents/† NovaNode/∆ NovaApp/clients/nova-app/public/logo.svg"
+        ),
+        _os.path.expanduser("~/.cache/ai-usage/novanode-logo.png"),
+    ]
+    candidates.extend(
+        glob.glob(
+            _os.path.expanduser(
+                "~/Documents/*/NovaNode/*/clients/nova-app/public/logo.svg"
+            )
+        )
+    )
+    for path in candidates:
+        if _os.path.isfile(path):
+            return path
+    return None
+
+def load_full_logo(path):
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    cache_dir = _os.path.expanduser("~/.cache/ai-usage")
+    cache_path = _os.path.join(cache_dir, "novanode-full.png")
+
+    def crop_content(image):
+        px = image.load()
+        xs, ys = [], []
+        for y in range(image.height):
+            for x in range(image.width):
+                if px[x, y][3] >= 20:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return image
+        return image.crop((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+
+    try:
+        src_mtime = _os.path.getmtime(path) if _os.path.isfile(path) else 0
+        if _os.path.isfile(cache_path) and _os.path.getmtime(cache_path) >= src_mtime:
+            return Image.open(cache_path).convert("RGBA")
+
+        if path.lower().endswith(".svg"):
+            import shutil as _shutil
+            import subprocess
+            import tempfile
+
+            rendered = None
+            rsvg = _shutil.which("rsvg-convert")
+            if rsvg:
+                tmp_png = _os.path.join(cache_dir, ".logo-render.png")
+                _os.makedirs(cache_dir, exist_ok=True)
+                result = subprocess.run(
+                    [rsvg, "-w", str(LOGO_RENDER_WIDTH), "-o", tmp_png, path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if result.returncode == 0 and _os.path.isfile(tmp_png):
+                    rendered = Image.open(tmp_png).convert("RGBA")
+
+            if rendered is None:
+                try:
+                    import cairosvg
+                    from io import BytesIO
+
+                    png = cairosvg.svg2png(
+                        url=path,
+                        output_width=LOGO_RENDER_WIDTH,
+                        output_height=int(LOGO_RENDER_WIDTH * 100.862 / 372.882),
+                    )
+                    rendered = Image.open(BytesIO(png)).convert("RGBA")
+                except Exception:
+                    rendered = None
+
+            if rendered is None:
+                tmp = tempfile.mkdtemp(prefix="ai-usage-logo-")
+                subprocess.run(
+                    ["qlmanage", "-t", "-s", "1200", "-o", tmp, path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                png_path = _os.path.join(tmp, _os.path.basename(path) + ".png")
+                if not _os.path.isfile(png_path):
+                    return None
+                rendered = crop_content(Image.open(png_path).convert("RGBA"))
+
+            img = rendered
+        else:
+            img = Image.open(path).convert("RGBA")
+
+        _os.makedirs(cache_dir, exist_ok=True)
+        img.save(cache_path, format="PNG")
+        return img
+    except Exception:
+        try:
+            if _os.path.isfile(cache_path):
+                return Image.open(cache_path).convert("RGBA")
+        except Exception:
+            pass
+    return None
+
+def split_logo_parts(full):
+    mark_w = min(full.width, max(1, int(full.width * MARK_CROP_RATIO) + 2))
+    word_x = min(full.width - 1, int(full.width * WORD_CROP_START))
+    mark = full.crop((0, 0, mark_w, full.height))
+    word = full.crop((word_x, 0, full.width, full.height))
+
+    def crop_content(image):
+        px = image.load()
+        xs, ys = [], []
+        for y in range(image.height):
+            for x in range(image.width):
+                if px[x, y][3] >= 20:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return image
+        return image.crop((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+
+    return crop_content(mark), crop_content(word)
+
+def image_to_halfblocks(image, width, height):
+    from PIL import Image
+
+    img = image.copy()
+    img.thumbnail((width, height * 2), Image.Resampling.LANCZOS)
+    w, h = img.size
+    if h % 2:
+        padded = Image.new("RGBA", (w, h + 1), (0, 0, 0, 0))
+        padded.paste(img, (0, 0))
+        img = padded
+        h += 1
+
+    px = img.load()
+    lines = []
+    for y in range(0, h, 2):
+        parts = []
+        for x in range(w):
+            top = px[x, y]
+            bot = px[x, y + 1]
+            if top[3] < 20 and bot[3] < 20:
+                parts.append(" ")
+                continue
+            if bot[3] < 20:
+                parts.append(
+                    f"\033[38;2;{top[0]};{top[1]};{top[2]}m▀{RESET}"
+                )
+            elif top[3] < 20:
+                parts.append(
+                    f"\033[48;2;{bot[0]};{bot[1]};{bot[2]}m▀{RESET}"
+                )
+            else:
+                parts.append(
+                    f"\033[38;2;{top[0]};{top[1]};{top[2]}m"
+                    f"\033[48;2;{bot[0]};{bot[1]};{bot[2]}m▀{RESET}"
+                )
+        lines.append("".join(parts))
+
+    return [line.rstrip() for line in lines if strip_ansi(line).strip()]
+
+def text_shaded_white(r, g, b):
+    lum = (r + g + b) / 3
+    if lum < 120:
+        return None
+    hi = int(228 + (lum / 255) * 27)
+    return (
+        min(255, hi + (r - lum) // 6),
+        min(255, hi + (g - lum) // 6),
+        min(255, hi + (b - lum) // 6),
+    )
+
+def isolate_text_pixels(image):
+    from PIL import Image
+
+    img = image.copy()
+    px = img.load()
+    for y in range(img.height):
+        for x in range(img.width):
+            r, g, b, a = px[x, y]
+            if a < 20:
+                px[x, y] = (0, 0, 0, 0)
+                continue
+            if r >= 180 and g >= 180 and b >= 180:
+                continue
+            px[x, y] = (0, 0, 0, 0)
+    return img
+
+def image_to_braille(image, char_w, char_h, whiten=True):
+    from PIL import Image
+
+    braille_base = 0x2800
+    dot_map = [
+        (0, 0, 0),
+        (0, 1, 1),
+        (0, 2, 2),
+        (0, 3, 6),
+        (1, 0, 3),
+        (1, 1, 4),
+        (1, 2, 5),
+        (1, 3, 7),
+    ]
+
+    img = image.copy()
+    if whiten:
+        img = isolate_text_pixels(img)
+    img.thumbnail((char_w * 2, char_h * 4), Image.Resampling.LANCZOS)
+    w, h = img.size
+    pad_h = (4 - h % 4) % 4
+    if pad_h:
+        padded = Image.new("RGBA", (w, h + pad_h), (0, 0, 0, 0))
+        padded.paste(img, (0, 0))
+        img = padded
+        h += pad_h
+
+    px = img.load()
+    lines = []
+    for y in range(0, h, 4):
+        row = []
+        for x in range(0, w, 2):
+            bits = 0
+            colors = []
+            for dx, dy, bit in dot_map:
+                xx, yy = x + dx, y + dy
+                if xx < w and yy < h:
+                    pixel = px[xx, yy]
+                    if pixel[3] >= 20:
+                        if whiten:
+                            shaded = text_shaded_white(*pixel[:3])
+                            if shaded is None:
+                                continue
+                            bits |= 1 << bit
+                            colors.append(shaded)
+                        else:
+                            bits |= 1 << bit
+                            colors.append(pixel[:3])
+            if bits:
+                r = sum(c[0] for c in colors) // len(colors)
+                g = sum(c[1] for c in colors) // len(colors)
+                b = sum(c[2] for c in colors) // len(colors)
+                row.append(f"\033[38;2;{r};{g};{b}m{chr(braille_base + bits)}{RESET}")
+            else:
+                row.append(" ")
+        if strip_ansi("".join(row)).strip():
+            lines.append("".join(row))
+
+    return lines
+
+def merge_logo_rows(left_lines_in, right_lines_in, gap=2, align="bottom"):
+    height = len(left_lines_in)
+
+    def pad(lines):
+        if align == "bottom":
+            return [""] * max(0, height - len(lines)) + lines
+        top = (height - len(lines)) // 2
+        bottom = height - len(lines) - top
+        return [""] * top + lines + [""] * bottom
+
+    left = left_lines_in
+    right = pad(right_lines_in)
+    spacer = " " * gap
+    merged = []
+    for left_line, right_line in zip(left, right):
+        if strip_ansi(right_line).strip():
+            merged.append(f"{left_line}{spacer}{right_line}".rstrip())
+        else:
+            merged.append(left_line)
+    return merged
+
+def wordmark_size(panel_w, mark_w=11, gap=2):
+    budget = max(0, panel_w - mark_w - gap)
+    if budget < 18:
+        return 0, 0
+    if budget < 26:
+        return min(budget, 22), 3
+    if budget < 34:
+        return min(budget, 28), 4
+    return min(budget, 32), 4
+
+def clip_logo_line(text, max_w):
+    if len(strip_ansi(text)) <= max_w:
+        return text
+    out = []
+    visible = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "\033":
+            end = text.find("m", i)
+            if end == -1:
+                break
+            out.append(text[i : end + 1])
+            i = end + 1
+            continue
+        if visible >= max_w:
+            break
+        out.append(text[i])
+        visible += 1
+        i += 1
+    out.append(RESET)
+    return "".join(out)
+
+def render_mark_lines(path, mark_w=11, mark_h=6):
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        return []
+    full = load_full_logo(path)
+    if full is None:
+        return []
+    mark, _word = split_logo_parts(full)
+    return image_to_halfblocks(mark, mark_w, mark_h)
+
+def render_wordmark_lines(path, char_w, char_h):
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        return []
+    full = load_full_logo(path)
+    if full is None:
+        return []
+    _mark, word = split_logo_parts(full)
+    return image_to_braille(word, char_w, char_h, whiten=True)
+
+def compose_logo(path, panel_w):
+    mark_w, mark_h, gap = 11, 6, 2
+    mark = render_mark_lines(path, mark_w, mark_h)
+    if not mark:
+        return []
+    mark_width = max(len(strip_ansi(line)) for line in mark)
+    char_w, char_h = wordmark_size(panel_w, mark_width, gap)
+    if char_w > 0 and char_h > 0:
+        word = render_wordmark_lines(path, char_w, char_h)
+        if word:
+            merged = merge_logo_rows(mark, word, gap=gap, align="bottom")
+            return [clip_logo_line(line, panel_w) for line in merged]
+    word_line = f"{BOLD}{WHITE}NovaNode{RESET}"
+    out = list(mark)
+    out[-1] = clip_logo_line(f"{out[-1]}  {word_line}", panel_w)
+    return [clip_logo_line(line, panel_w) for line in out]
+
+def cached_logo_lines(panel_w):
+    logo_path = find_logo_path()
+    if not logo_path:
+        return None
+    try:
+        src_mtime = int(_os.path.getmtime(logo_path))
+    except Exception:
+        src_mtime = 0
+    cache_dir = _os.path.expanduser("~/.cache/novanode")
+    try:
+        _os.makedirs(cache_dir, exist_ok=True)
+    except Exception:
+        pass
+    cache_file = _os.path.join(cache_dir, f"logo-w{panel_w}-{src_mtime}.txt")
+    if _os.path.isfile(cache_file):
+        try:
+            with open(cache_file) as fh:
+                cached = fh.read().split("\n")
+            if cached and cached[-1] == "":
+                cached = cached[:-1]
+            if cached:
+                return cached
+        except Exception:
+            pass
+    logo = compose_logo(logo_path, panel_w)
+    if logo:
+        try:
+            with open(cache_file, "w") as fh:
+                fh.write("\n".join(logo))
+        except Exception:
+            pass
+    return logo
+
 header_inner = width - 4
-left_w = max(32, min(44, (header_inner - 3) // 2))
+left_w = max(34, min(48, (header_inner - 3) // 2))
 right_w = header_inner - left_w - 3
 title = f" NovaNode · Terminal · v{script_version} "
 
@@ -764,14 +1147,19 @@ def wrap_block(lines, width_limit):
         out.extend(wrap_plain(line, width_limit))
     return out
 
-left_lines = wrap_block(
-    [
-        f"{BOLD}{WHITE}NovaNode{RESET}",
-        f"{GREEN}Chat stays here; providers run in-house.{RESET}",
-        f"{DIM}Workspace {workspace_dir}{RESET}",
-        f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
-    ],
-    left_w,
+logo_block = cached_logo_lines(left_w) or [f"{BOLD}{WHITE}NovaNode{RESET}"]
+
+left_lines = (
+    logo_block
+    + [""]
+    + wrap_block(
+        [
+            f"{GREEN}Chat stays here; providers run in-house.{RESET}",
+            f"{DIM}Workspace {workspace_dir}{RESET}",
+            f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
+        ],
+        left_w,
+    )
 )
 right_lines = wrap_block(
     [
