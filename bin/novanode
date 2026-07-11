@@ -97,11 +97,14 @@ parse_prompt_assets() {
   local prompt_file="$2"
   local images_file="$3"
   python3 - "$prompt" "$prompt_file" "$images_file" << 'PYEOF'
-import os, shlex, sys
+import os, re, sys
 
 prompt, prompt_file, images_file = sys.argv[1:4]
-image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".heic")
-image_re = r"(?:~|/)[^\n]*?\.(?:png|jpe?g|webp|gif|bmp|tiff|heic)"
+
+IMAGE_PATH_RE = re.compile(
+    r"(?:^|(?<=\s))(?P<path>(?:~|/)[^\s\\]*(?:\\ [^\s\\]*)*\.(?:png|jpe?g|webp|gif|bmp|tiff|heic))",
+    re.IGNORECASE,
+)
 
 def clean_paste_markers(text):
     return text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
@@ -114,47 +117,22 @@ def resolve_candidate(raw):
             return expanded
     return None
 
-def image_paths_from_prompt(text):
-    text = clean_paste_markers(text)
-    paths = []
-    index = 0
-    while index < len(text):
-        start_candidates = [pos for pos in (text.find("/", index), text.find("~", index)) if pos != -1]
-        if not start_candidates:
-            break
-        start = min(start_candidates)
-        best = None
-        lower = text.lower()
-        for ext in image_exts:
-            search = start
-            while True:
-                end = lower.find(ext, search)
-                if end == -1:
-                    break
-                candidate_end = end + len(ext)
-                resolved = resolve_candidate(text[start:candidate_end])
-                if resolved:
-                    best = (start, candidate_end, resolved)
-                    break
-                search = end + 1
-            if best:
-                break
-        if best:
-            paths.append(((best[0], best[1]), best[2]))
-            index = best[1]
-        else:
-            index = start + 1
-    return paths
-
 prompt = clean_paste_markers(prompt)
-found = image_paths_from_prompt(prompt)
-images = [path for _, path in found]
-clean_prompt = prompt
-for span, path in reversed(found):
-    if span:
-        clean_prompt = clean_prompt[:span[0]] + clean_prompt[span[1]:]
 
-clean_prompt = " ".join(clean_prompt.split()).strip()
+# Strip every path that looks like an image (shape-based match) regardless
+# of file existence — the chat UI already displayed them as [Image #N] chips
+# so leaving the raw path in the prompt would be confusing to the model.
+images = []
+result_parts = []
+last = 0
+for match in IMAGE_PATH_RE.finditer(prompt):
+    result_parts.append(prompt[last:match.start("path")])
+    resolved = resolve_candidate(match.group("path"))
+    if resolved:
+        images.append(resolved)
+    last = match.end("path")
+result_parts.append(prompt[last:])
+clean_prompt = " ".join("".join(result_parts).split()).strip()
 if images and not clean_prompt:
     clean_prompt = "Please inspect the attached image."
 
