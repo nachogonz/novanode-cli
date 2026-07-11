@@ -502,20 +502,23 @@ run_prompt() {
       [ -n "$model_claude" ] && extra+=(--model "$model_claude")
       local attach_dir="" attach_paths="" attach_index=0
       if [ -s "$images_tmp" ]; then
-        attach_dir="$(mktemp -d "${TMPDIR:-/tmp}/novanode-attach.XXXXXX")"
-        while IFS= read -r image; do
-          [ -n "$image" ] || continue
-          [ -f "$image" ] || continue
-          attach_index=$((attach_index + 1))
-          local ext="${image##*.}"
-          local staged="${attach_dir}/image_${attach_index}.${ext}"
-          cp "$image" "$staged" 2>/dev/null || continue
-          attach_paths="${attach_paths}- ${staged}"$'\n'
-        done < "$images_tmp"
-        if [ -n "$attach_paths" ]; then
-          extra+=(--add-dir "$attach_dir")
-          extra+=(--allowedTools "Read")
-          clean_prompt="${clean_prompt}"$'\n\n'"The user attached image(s). Use the Read tool on each of these paths to view the images before responding:"$'\n'"${attach_paths}"
+        # Put attached images INSIDE the workspace so Claude has native read access —
+        # no permission prompt required, no --add-dir dance, no --allowedTools flag.
+        attach_dir="${WORKSPACE_DIR}/.novanode-attach.$$"
+        mkdir -p "$attach_dir" 2>/dev/null || attach_dir=""
+        if [ -n "$attach_dir" ]; then
+          while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            [ -f "$image" ] || continue
+            attach_index=$((attach_index + 1))
+            local ext="${image##*.}"
+            local staged="${attach_dir}/image_${attach_index}.${ext}"
+            cp "$image" "$staged" 2>/dev/null || continue
+            attach_paths="${attach_paths}- ${staged}"$'\n'
+          done < "$images_tmp"
+          if [ -n "$attach_paths" ]; then
+            clean_prompt="${clean_prompt}"$'\n\n'"The user attached image(s). Use the Read tool on each of these paths to view the images before responding:"$'\n'"${attach_paths}"
+          fi
         fi
       fi
       "$cmd" "${extra[@]}" "$clean_prompt" 2>/dev/null | claude_stream_parser "$transcript_file"
@@ -1502,6 +1505,10 @@ read_prompt() {
 }
 
 enter_live_screen
+# When input runs past terminal width, scroll horizontally instead of wrapping
+# to a second visual line — keeps the single '›' prefix in the top-left and
+# lets long text extend to the right cleanly.
+bind 'set horizontal-scroll-mode on' 2>/dev/null || true
 render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
 
 handle_prompt() {
@@ -1575,6 +1582,9 @@ while true; do
 
   case "$input" in
     "")
+      # Empty Enter is a no-op. Move cursor back up so the next prompt
+      # overwrites the empty line rather than stacking new '›' rows.
+      printf "\033[F"
       continue
       ;;
     /q|/quit|exit)
