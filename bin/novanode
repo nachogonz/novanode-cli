@@ -565,7 +565,9 @@ render_screen() {
   local transcript_file="$3"
   local state_line="${4:-}"
   local models="${5:-}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$models" << 'PYEOF'
+  local input_buffer="${6:-}"
+  local input_cursor="${7:-0}"
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$models" "$input_buffer" "$input_cursor" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
@@ -1245,7 +1247,36 @@ for msg in messages:
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
 
-chat_h = max(6, height - len(header) - 7)
+input_buffer = sys.argv[8] if len(sys.argv) > 8 else ""
+try:
+    input_cursor = int(sys.argv[9]) if len(sys.argv) > 9 else 0
+except Exception:
+    input_cursor = 0
+input_cursor = max(0, min(len(input_buffer), input_cursor))
+
+input_prefix_w = 2
+input_max_width = max(1, width - input_prefix_w)
+
+def wrap_input(buf, cur):
+    if not buf:
+        return [""]
+    rows = []
+    i = 0
+    while i < len(buf):
+        rows.append(buf[i:i + input_max_width])
+        i += input_max_width
+    if cur == len(buf) and cur > 0 and cur % input_max_width == 0:
+        rows.append("")
+    return rows
+
+all_input_rows = wrap_input(input_buffer, input_cursor)
+min_chat_h = 3
+max_input_h = max(1, height - len(header) - min_chat_h - 5)
+first_visible_input = max(0, len(all_input_rows) - max_input_h)
+input_rows_visible = all_input_rows[first_visible_input:]
+input_h = len(input_rows_visible)
+
+chat_h = max(min_chat_h, height - len(header) - input_h - 5)
 visible_chat = chat_lines[-chat_h:]
 
 sys.stdout.write("\033[H\033[2J")
@@ -1273,7 +1304,6 @@ def status_row(left, right, limit):
     gap = max(1, limit - len(left_plain) - len(right_plain))
     return f"{left}{' ' * gap}{right}"
 
-row_content = f"{GREEN}›{RESET} "
 status_left = f"{GREEN}{state_line}{RESET}" if state_line else ""
 status_right = ""
 
@@ -1284,7 +1314,9 @@ else:
 
 print(fit(status_row(status_left, status_right, width), width))
 print(border)
-print(fit(row_content, width))
+for idx, row_text in enumerate(input_rows_visible):
+    prefix = f"{GREEN}›{RESET} " if (idx == 0 and first_visible_input == 0) else "  "
+    print(fit(f"{prefix}{row_text}", width))
 print(border)
 token_footer = f"{DIM}{token_status}{RESET}" if token_status else ""
 sys.stdout.write(fit(status_row(prov_status, token_footer, width), width))
@@ -1292,7 +1324,22 @@ sys.stdout.write(fit(status_row(prov_status, token_footer, width), width))
 if state_line:
     sys.stdout.write("\033[?25l")
 else:
-    sys.stdout.write("\r\033[2A\033[2C\033[?25h")
+    cursor_row_total = input_cursor // input_max_width
+    cursor_col = input_cursor % input_max_width
+    if input_cursor == len(input_buffer) and input_cursor > 0 and cursor_col == 0:
+        cursor_row_total = max(0, cursor_row_total - 1)
+        cursor_col = input_max_width
+    if cursor_row_total < first_visible_input:
+        cursor_row_visible = 0
+        cursor_col = 0
+    elif cursor_row_total >= first_visible_input + input_h:
+        cursor_row_visible = input_h - 1
+        cursor_col = input_max_width
+    else:
+        cursor_row_visible = cursor_row_total - first_visible_input
+    up = 1 + input_h - cursor_row_visible
+    col_offset = input_prefix_w + cursor_col
+    sys.stdout.write(f"\r\033[{up}A\033[{col_offset}C\033[?25h")
 sys.stdout.flush()
 PYEOF
 }
@@ -1494,21 +1541,168 @@ read_prompt() {
     IFS= read -r REPLY
     return $?
   fi
-  printf "\r\033[2K%s› %s" "$GREEN" "$RESET"
-  local reply=""
-  if IFS= read -er reply; then
-    REPLY="$reply"
-    return 0
+  local buffer="" cursor=0
+  local key e1 e2 tail paste_more start
+  local t_esc="1" has_frac=0
+  if (( ${BASH_VERSINFO[0]:-0} >= 4 )); then
+    has_frac=1
+    t_esc="0.05"
   fi
-  REPLY=""
-  return 1
+  render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+  while true; do
+    if ! IFS= read -rsn1 key; then
+      REPLY=""
+      return 1
+    fi
+    if [[ -z "$key" ]]; then
+      local peek=""
+      if [ "$has_frac" -eq 1 ]; then
+        IFS= read -rsn1 -t 0.005 peek 2>/dev/null || :
+      else
+        local _pk_saved="" _pk_drain=""
+        _pk_saved=$(stty -g 2>/dev/null)
+        stty -icanon min 0 time 0 2>/dev/null
+        _pk_drain=$(dd bs=1024 count=1 2>/dev/null || true)
+        [ -n "$_pk_saved" ] && stty "$_pk_saved" 2>/dev/null
+        peek="$_pk_drain"
+      fi
+      if [ -z "$peek" ]; then
+        REPLY="$buffer"
+        return 0
+      fi
+      buffer="${buffer:0:$cursor} ${buffer:$cursor}"
+      cursor=$((cursor + 1))
+      local _pi=0 _pn=${#peek} _pch=""
+      while [ "$_pi" -lt "$_pn" ]; do
+        _pch="${peek:$_pi:1}"
+        _pi=$((_pi + 1))
+        case "$_pch" in
+          $'\n'|$'\r')
+            buffer="${buffer:0:$cursor} ${buffer:$cursor}"
+            cursor=$((cursor + 1))
+            continue
+            ;;
+          $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08')
+            break
+            ;;
+        esac
+        buffer="${buffer:0:$cursor}${_pch}${buffer:$cursor}"
+        cursor=$((cursor + 1))
+      done
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+      continue
+    fi
+    case "$key" in
+      $'\x1b')
+        e1=""; e2=""
+        IFS= read -rsn1 -t "$t_esc" e1 2>/dev/null || :
+        if [[ -z "$e1" ]]; then
+          REPLY=""
+          return 130
+        fi
+        IFS= read -rsn1 -t "$t_esc" e2 2>/dev/null || :
+        case "$e1$e2" in
+          '[A'|'OA'|'[B'|'OB') ;;
+          '[C'|'OC') [ "$cursor" -lt "${#buffer}" ] && cursor=$((cursor + 1)) ;;
+          '[D'|'OD') [ "$cursor" -gt 0 ] && cursor=$((cursor - 1)) ;;
+          '[H'|'OH') cursor=0 ;;
+          '[F'|'OF') cursor="${#buffer}" ;;
+          '[1'|'[3'|'[4'|'[5'|'[6'|'[7'|'[8')
+            tail=""
+            IFS= read -rsn1 -t "$t_esc" tail 2>/dev/null || :
+            case "$e1$e2" in
+              '[3')
+                if [ "$cursor" -lt "${#buffer}" ]; then
+                  buffer="${buffer:0:$cursor}${buffer:$((cursor + 1))}"
+                fi
+                ;;
+              '[1'|'[7') cursor=0 ;;
+              '[4'|'[8') cursor="${#buffer}" ;;
+            esac
+            ;;
+          *) ;;
+        esac
+        ;;
+      $'\x7f'|$'\x08')
+        if [ "$cursor" -gt 0 ]; then
+          buffer="${buffer:0:$((cursor - 1))}${buffer:$cursor}"
+          cursor=$((cursor - 1))
+        fi
+        ;;
+      $'\x03')
+        REPLY=""
+        return 130
+        ;;
+      $'\x04')
+        if [ -z "$buffer" ]; then
+          REPLY=""
+          return 1
+        fi
+        ;;
+      $'\x15')
+        buffer="${buffer:$cursor}"
+        cursor=0
+        ;;
+      $'\x01') cursor=0 ;;
+      $'\x05') cursor="${#buffer}" ;;
+      $'\x17')
+        start=$cursor
+        while [ "$start" -gt 0 ] && [[ "${buffer:$((start - 1)):1}" == " " ]]; do
+          start=$((start - 1))
+        done
+        while [ "$start" -gt 0 ] && [[ "${buffer:$((start - 1)):1}" != " " ]]; do
+          start=$((start - 1))
+        done
+        buffer="${buffer:0:$start}${buffer:$cursor}"
+        cursor=$start
+        ;;
+      *)
+        buffer="${buffer:0:$cursor}${key}${buffer:$cursor}"
+        cursor=$((cursor + 1))
+        if [ "$has_frac" -eq 1 ]; then
+          while IFS= read -rsn1 -t 0.001 paste_more 2>/dev/null; do
+            if [[ -z "$paste_more" ]]; then
+              buffer="${buffer:0:$cursor} ${buffer:$cursor}"
+              cursor=$((cursor + 1))
+              continue
+            fi
+            case "$paste_more" in
+              $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08') break ;;
+            esac
+            buffer="${buffer:0:$cursor}${paste_more}${buffer:$cursor}"
+            cursor=$((cursor + 1))
+          done
+        else
+          local saved_stty="" drain="" di=0 dn=0 dch=""
+          saved_stty=$(stty -g 2>/dev/null)
+          stty -icanon min 0 time 0 2>/dev/null
+          drain=$(dd bs=1024 count=1 2>/dev/null || true)
+          [ -n "$saved_stty" ] && stty "$saved_stty" 2>/dev/null
+          dn=${#drain}
+          while [ "$di" -lt "$dn" ]; do
+            dch="${drain:$di:1}"
+            di=$((di + 1))
+            case "$dch" in
+              $'\n'|$'\r')
+                buffer="${buffer:0:$cursor} ${buffer:$cursor}"
+                cursor=$((cursor + 1))
+                continue
+                ;;
+              $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08')
+                break
+                ;;
+            esac
+            buffer="${buffer:0:$cursor}${dch}${buffer:$cursor}"
+            cursor=$((cursor + 1))
+          done
+        fi
+        ;;
+    esac
+    render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+  done
 }
 
 enter_live_screen
-# When input runs past terminal width, scroll horizontally instead of wrapping
-# to a second visual line — keeps the single '›' prefix in the top-left and
-# lets long text extend to the right cleanly.
-bind 'set horizontal-scroll-mode on' 2>/dev/null || true
 render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
 
 handle_prompt() {
