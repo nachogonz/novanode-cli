@@ -1123,6 +1123,36 @@ def cached_logo_lines(panel_w):
             pass
     return logo
 
+def cached_hero_lines(char_w, char_h=4):
+    logo_path = find_logo_path()
+    if not logo_path:
+        return []
+    try:
+        src_mtime = int(_os.path.getmtime(logo_path))
+    except Exception:
+        src_mtime = 0
+    cache_dir = _os.path.expanduser("~/.cache/novanode")
+    cache_file = _os.path.join(
+        cache_dir, f"hero-v1-w{char_w}-h{char_h}-{src_mtime}.txt"
+    )
+    try:
+        _os.makedirs(cache_dir, exist_ok=True)
+        if _os.path.isfile(cache_file):
+            with open(cache_file) as fh:
+                cached = fh.read().splitlines()
+            if cached:
+                return cached
+    except Exception:
+        pass
+    hero = render_wordmark_lines(logo_path, char_w, char_h)
+    if hero:
+        try:
+            with open(cache_file, "w") as fh:
+                fh.write("\n".join(hero))
+        except Exception:
+            pass
+    return hero
+
 header_inner = width - 4
 left_w = max(34, min(48, (header_inner - 3) // 2))
 right_w = header_inner - left_w - 3
@@ -1252,8 +1282,15 @@ except Exception:
     input_cursor = 0
 input_cursor = max(0, min(len(input_buffer), input_cursor))
 
-input_prefix_w = 2
-input_max_width = max(1, width - input_prefix_w)
+has_chat = bool(chat_lines)
+if has_chat:
+    card_w = max(32, width - 2)
+    card_left = 1
+else:
+    card_w = max(32, min(84, width - 8))
+    card_left = max(0, (width - card_w) // 2)
+input_prefix_w = 4
+input_max_width = max(1, card_w - input_prefix_w - 2)
 
 def wrap_input(buf, cur):
     if not buf:
@@ -1268,39 +1305,10 @@ def wrap_input(buf, cur):
     return rows
 
 all_input_rows = wrap_input(input_buffer, input_cursor)
-min_chat_h = 3
-# The fixed spacer/status/border/footer rows consume five lines. Autowrap is
-# disabled for the live screen, so the footer can safely occupy the last row.
-reserved_rows = 5
-max_input_h = max(1, height - len(header) - min_chat_h - reserved_rows)
+max_input_h = max(1, min(6, height - 8))
 first_visible_input = max(0, len(all_input_rows) - max_input_h)
 input_rows_visible = all_input_rows[first_visible_input:]
 input_h = len(input_rows_visible)
-
-chat_h = max(min_chat_h, height - len(header) - input_h - reserved_rows)
-try:
-    chat_scroll = max(0, int(sys.argv[10]))
-except Exception:
-    chat_scroll = 0
-chat_scroll = min(chat_scroll, max(0, len(chat_lines) - chat_h))
-chat_end = len(chat_lines) - chat_scroll
-chat_start = max(0, chat_end - chat_h)
-visible_chat = chat_lines[chat_start:chat_end]
-
-render_mode = sys.argv[11] if len(sys.argv) > 11 else "full"
-# Render each frame atomically where synchronized terminal updates are
-# supported. Other terminals safely ignore this private mode.
-sys.stdout.write("\033[?2026h\033[H" + ("\033[2J" if render_mode == "full" else ""))
-for line in header:
-    print(line)
-print()
-
-for line in visible_chat:
-    print("  " + fit(line, width - 4))
-for _ in range(max(0, chat_h - len(visible_chat))):
-    print()
-
-border = f"{ORANGE}{'─' * width}{RESET}"
 
 def status_row(left, right, limit):
     left = left or ""
@@ -1316,21 +1324,86 @@ def status_row(left, right, limit):
     return f"{left}{' ' * gap}{right}"
 
 status_left = f"{GREEN}{state_line}{RESET}" if state_line else ""
-status_right = ""
+status_right = f"{DIM}{token_status}{RESET}" if token_status else ""
 
-if providers:
-    prov_status = "   ".join(compact_provider(p) for p in providers_sorted)
+active_model = models.get(active, "") or "default"
+screen = [""] * height
+
+def center_line(text, target_width=width):
+    visible = len(strip_ansi(text))
+    return " " * max(0, (target_width - visible) // 2) + text
+
+def put(row, text):
+    if 0 <= row < height:
+        screen[row] = fit(text, width)
+
+def input_card(start_row):
+    for idx, row_text in enumerate(input_rows_visible):
+        prompt = f"{BOLD}{GREEN}›{RESET} " if idx == 0 and first_visible_input == 0 else "  "
+        if not row_text and not input_buffer and idx == 0:
+            display_text = f"{DIM}Ask NovaNode anything…{RESET}"
+        else:
+            display_text = row_text
+        content = f"{prompt}{display_text}"
+        content = fill(content, card_w - 2)
+        put(
+            start_row + idx,
+            " " * card_left + f"{ORANGE}▎{RESET}{GRAY_BG}{content}{RESET}",
+        )
+    if providers:
+        provider_strip = "   ".join(compact_provider(p) for p in providers_sorted)
+    else:
+        provider_strip = f"{DIM}usage unavailable{RESET}"
+    put(start_row + input_h, " " * (card_left + 2) + provider_strip)
+
+if not has_chat:
+    hero = cached_hero_lines(min(38, max(20, width - 16)), 4)
+    if not hero:
+        hero = [f"{BOLD}{WHITE}NovaNode{RESET}"]
+
+    hero_start = max(2, height // 2 - 11)
+    for idx, line in enumerate(hero):
+        put(hero_start + idx, center_line(line))
+
+    subtitle = f"{DIM}AI terminal hub · Claude · Codex{RESET}"
+    put(hero_start + len(hero) + 1, center_line(subtitle))
+
+    input_start_row = hero_start + len(hero) + 4
+    input_card(input_start_row)
+    tip = f"{ORANGE}● Tip{RESET}{DIM}  /use claude or /use codex to choose a provider{RESET}"
+    put(input_start_row + input_h + 3, center_line(tip))
 else:
-    prov_status = f"{DIM}usage unavailable{RESET}"
+    title_left = f" {BOLD}{ORANGE}NovaNode{RESET}{DIM}  chat{RESET}"
+    if selected:
+        header_window = selected.get("p1") or "5h"
+        header_usage = fmt_pct(selected.get("used1", "n/a"))
+    else:
+        header_window = "5h"
+        header_usage = "n/a"
+    title_right = (
+        f"{GREEN}{active}{RESET}{DIM} · {active_model}"
+        f"  ·  {header_window} {header_usage} used{RESET} "
+    )
+    put(0, status_row(title_left, title_right, width))
+    put(1, f"{DIM}{'─' * width}{RESET}")
 
-print(fit(status_row(status_left, status_right, width), width))
-print(border)
-for idx, row_text in enumerate(input_rows_visible):
-    prefix = f"{GREEN}›{RESET} " if (idx == 0 and first_visible_input == 0) else "  "
-    print(fit(f"{prefix}{row_text}", width))
-print(border)
-token_footer = f"{DIM}{token_status}{RESET}" if token_status else ""
-sys.stdout.write(fit(status_row(prov_status, token_footer, width), width))
+    input_start_row = height - input_h - 1
+    status_row_index = input_start_row - 1
+    chat_start_row = 2
+    chat_h = max(1, status_row_index - chat_start_row)
+    visible_chat = chat_lines[-chat_h:]
+    first_chat_row = chat_start_row
+    for idx, line in enumerate(visible_chat):
+        put(first_chat_row + idx, "  " + fit(line, width - 4))
+    put(status_row_index, status_row(status_left, status_right, width))
+    input_card(input_start_row)
+
+render_mode = sys.argv[11] if len(sys.argv) > 11 else "full"
+sys.stdout.write("\033[?2026h\033[H" + ("\033[2J" if render_mode == "full" else ""))
+for index, line in enumerate(screen):
+    sys.stdout.write(line)
+    if index < height - 1:
+        sys.stdout.write("\n")
 
 if state_line and state_line != "Press Ctrl+C again to quit NovaNode":
     sys.stdout.write("\033[?25l")
@@ -1348,15 +1421,10 @@ else:
         cursor_col = input_max_width
     else:
         cursor_row_visible = cursor_row_total - first_visible_input
-    # Always restore editor focus with an absolute screen coordinate. Relative
-    # cursor moves can drift after wheel events on macOS terminals even though
-    # the alternate-screen contents themselves remain fixed.
-    input_start_row = len(header) + chat_h + 4
-    cursor_screen_row = input_start_row + cursor_row_visible
-    cursor_screen_col = input_prefix_w + cursor_col + 1
-    sys.stdout.write(
-        f"\033[{cursor_screen_row};{cursor_screen_col}H\033[?25h"
-    )
+    cursor_screen_row = input_start_row + cursor_row_visible + 1
+    cursor_screen_col = card_left + 4 + cursor_col
+    sys.stdout.write(f"\033[{cursor_screen_row};{cursor_screen_col}H\033[?25h")
+
 sys.stdout.write("\033[?2026l")
 sys.stdout.flush()
 PYEOF
