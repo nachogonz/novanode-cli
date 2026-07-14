@@ -192,6 +192,11 @@ refresh_after_unlock() {
       ;;
   esac
 
+  # Replace the current dashboard in place after a refresh. Clearing both the
+  # viewport and scrollback avoids stacking a second copy below stale data.
+  if [ -t 1 ]; then
+    printf '\033[H\033[2J\033[3J'
+  fi
   AI_USAGE_NO_REFRESH_PROMPT=1 exec "$0"
 }
 
@@ -692,7 +697,7 @@ PYEOF
 
 (
 python3 << 'PYEOF' > "$CODEX_TMP"
-import json, sqlite3, os, subprocess, time
+import glob, json, sqlite3, os, subprocess, time
 from datetime import datetime
 
 def bar(percent, w=22):
@@ -847,27 +852,77 @@ def pick_windows(rl):
                 short = w
     return short, weekly
 
-def emit_blank():
-    print(f"—|{bar(0)}|—|—")
+def is_current(w):
+    if not w:
+        return False
+    reset_ts = w.get("resetsAt", w.get("reset_at"))
+    try:
+        return float(reset_ts) > time.time()
+    except Exception:
+        return False
 
-rl = fetch_via_app_server()
-if rl is None:
-    rl = fetch_from_sqlite()
+def compact_tokens(value):
+    try:
+        value = int(value)
+    except Exception:
+        return "n/a"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1_000:
+        return f"{value / 1_000:.0f}k"
+    return str(value)
 
-short, weekly = pick_windows(rl)
+def fetch_session_usage():
+    pattern = os.path.expanduser("~/.codex/sessions/**/*.jsonl")
+    paths = sorted(glob.glob(pattern, recursive=True), reverse=True)
+    for path in paths[:20]:
+        latest = None
+        try:
+            with open(path, errors="ignore") as fh:
+                for line in fh:
+                    if '"type":"token_count"' not in line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    payload = event.get("payload") or {}
+                    info = payload.get("info") or {}
+                    usage = info.get("last_token_usage") or {}
+                    used = usage.get("total_tokens")
+                    context = info.get("model_context_window")
+                    if used is not None and context:
+                        latest = (float(used), float(context))
+        except Exception:
+            continue
+        if latest:
+            used, context = latest
+            pct = max(0, min(100, used / context * 100))
+            detail = f"{compact_tokens(used)} / {compact_tokens(context)} tokens"
+            return pct, detail
+    return None
 
+live_rl = fetch_via_app_server()
+cached_rl = fetch_from_sqlite()
+
+short, weekly = pick_windows(live_rl)
+cached_short, cached_weekly = pick_windows(cached_rl)
+if short is None and is_current(cached_short):
+    short = cached_short
+if weekly is None and is_current(cached_weekly):
+    weekly = cached_weekly
+
+# Keep the dashboard rows stable even when Codex temporarily omits one window:
+# the first row is always the 5h allowance and the second is always weekly.
+session_usage = fetch_session_usage() if short is None else None
 if short is not None:
-    emit(short_label(short.get("windowDurationMins")), short, weekly=False)
-    if weekly is not None:
-        emit("Weekly", weekly, weekly=True)
-    else:
-        emit_blank()
-elif weekly is not None:
-    emit("Weekly", weekly, weekly=True)
-    emit_blank()
+    emit("5h", short, weekly=False)
+elif session_usage is not None:
+    session_pct, session_detail = session_usage
+    print(f"5h|{bar(session_pct)}|{session_pct:.0f}|{session_detail}|session")
 else:
     emit("5h", None, weekly=False)
-    emit("Weekly", None, weekly=True)
+emit("Weekly", weekly, weekly=True)
 PYEOF
 ) &
 
@@ -895,7 +950,7 @@ CURSOR_VER=$(cursor --version 2>/dev/null|head -1)
 
 CX5H=$(echo "$CODEX_RAW"|sed -n '1p')
 CX7D=$(echo "$CODEX_RAW"|sed -n '2p')
-CX5_LABEL=$(echo "$CX5H"|cut -d'|' -f1); CX5_BAR=$(echo "$CX5H"|cut -d'|' -f2); CX5_PCT=$(echo "$CX5H"|cut -d'|' -f3); CX5_RESET=$(echo "$CX5H"|cut -d'|' -f4)
+CX5_LABEL=$(echo "$CX5H"|cut -d'|' -f1); CX5_BAR=$(echo "$CX5H"|cut -d'|' -f2); CX5_PCT=$(echo "$CX5H"|cut -d'|' -f3); CX5_RESET=$(echo "$CX5H"|cut -d'|' -f4); CX5_SOURCE=$(echo "$CX5H"|cut -d'|' -f5)
 CX7_LABEL=$(echo "$CX7D"|cut -d'|' -f1); CX7_BAR=$(echo "$CX7D"|cut -d'|' -f2); CX7_PCT=$(echo "$CX7D"|cut -d'|' -f3); CX7_RESET=$(echo "$CX7D"|cut -d'|' -f4)
 CXVER=$(codex --version 2>/dev/null|head -1|sed 's/codex-cli //')
 CLAUDE_NEEDS_REFRESH=0
@@ -919,7 +974,11 @@ elif [ "$CX5_PCT" = "—" ]; then
   CX5_RESET_LABEL=""
 else
   CX5_PCT_LABEL="${CX5_PCT}%"
-  CX5_RESET_LABEL="resets ${CX5_RESET}"
+  if [ "$CX5_SOURCE" = "session" ]; then
+    CX5_RESET_LABEL="$CX5_RESET"
+  else
+    CX5_RESET_LABEL="resets ${CX5_RESET}"
+  fi
 fi
 
 # ─── Unified layout width (header + table) ───────────────────────────────────
@@ -1043,7 +1102,7 @@ rows = [
         "claude",
         "claude",
         clean("""${CVER}"""),
-        "Session",
+        "5h",
         clean("""${CLAUDE_5H_PCT}"""),
         left("""${CLAUDE_5H_PCT}"""),
         clean("""${CLAUDE_5H_RESET}"""),
@@ -1537,7 +1596,7 @@ right = expand_panel(
         f"{GREEN}Claude · Codex · Cursor in one view{RESET}",
         "",
         f"{ORANGE}What's tracked{RESET}",
-        f"{GREEN}Session + weekly limits per provider{RESET}",
+        f"{GREEN}5h + weekly limits per provider{RESET}",
         f"{GREEN}Auto · premium · billing cycle{RESET}",
         f"{GREEN}Plan spend + custom spend{RESET}",
         f"{DIM}/nn-usage · NovaNode dev tools{RESET}",
@@ -1612,6 +1671,8 @@ def codex_row1(label, pct, reset):
     # pct already carries % suffix or a keyword; reset already has "resets " prefix or "".
     if pct == "—" or label == "—":
         return cell("")
+    if pct == "n/a":
+        return cell(f"{label} · unavailable", "not provided by Codex API")
     return cell(f"{label} · {pct} used", reset)
 
 def codex_row2(label, pct, reset):
@@ -1633,7 +1694,7 @@ rows = [
     f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
     f"| {rule()} | {rule()} | {rule()} |",
     f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
-    f"| {cell(f'Session · {c5_pct} used', f'resets {c5_reset}')} | {codex_row1(cx5_label, cx5_pct, cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
+    f"| {cell(f'5h · {c5_pct} used', f'resets {c5_reset}')} | {codex_row1(cx5_label, cx5_pct, cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
     f"| {c5_bar}{' ' * max(1, w - len(c5_bar))} | {codex_bar(cx5_bar, cx5_pct)} | {ca_bar}{' ' * max(1, w - len(ca_bar))} |",
     f"| {' ' * w} | {' ' * w} | {' ' * w} |",
     f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {codex_row2(cx7_label, cx7_pct, cx7_reset)} | {cell(f'Premium · {prem_pct}')} |",
@@ -1703,5 +1764,18 @@ for line in sys.stdin:
         aligned = aligned + " " * (WIDTH - len(vis_aligned))
     print(aligned)
 '
+
+if [ "$CX7_PCT" != "n/a" ] && [ "$CX7_PCT" != "—" ] && [ "$CX7_PCT" != "stale" ]; then
+  if [ "$CX5_PCT" = "n/a" ]; then
+    CODEX_REFRESH_NOTE="Codex refreshed automatically · Weekly ${CX7_PCT}% · 5h unavailable from Codex API"
+  elif [ "$CX5_SOURCE" = "session" ]; then
+    CODEX_REFRESH_NOTE="Codex refreshed automatically · 5h session ${CX5_PCT}% · Weekly ${CX7_PCT}%"
+  else
+    CODEX_REFRESH_NOTE="Codex refreshed automatically · 5h ${CX5_PCT}% · Weekly ${CX7_PCT}%"
+  fi
+  printf '\n  \033[38;5;82m✓ %s\033[0m\n' "$CODEX_REFRESH_NOTE"
+elif [ "$CX5_PCT" = "n/a" ] && [ "$CX7_PCT" = "n/a" ]; then
+  printf '\n  \033[38;5;208m! Codex could not refresh · run codex to reconnect\033[0m\n'
+fi
 
 refresh_after_unlock "$CLAUDE_NEEDS_REFRESH" "$CODEX_NEEDS_REFRESH"
