@@ -1659,30 +1659,66 @@ def codex_bar(bar_str, pct):
         return " " * w
     return f"{bar_str}{' ' * max(1, w - len(bar_str))}"
 
+def number(value):
+    try:
+        return max(0.0, min(100.0, float(str(value).replace("%", "").strip())))
+    except Exception:
+        return None
+
+def battery(label, value, footer):
+    used = number(value)
+    if used is None:
+        meter = "▱▱▱▱▱"
+        status = "n/a"
+    else:
+        left = max(0, 100 - used)
+        if left <= 0:
+            filled = 0
+        elif left >= 100:
+            filled = 5
+        else:
+            filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
+        meter = "▰" * filled + "▱" * (5 - filled)
+        status = f"{left:g}% left"
+    title = f"{label:<8} {meter}  {status}"
+    detail = f"{'':8} {footer}" if footer else ""
+    return title[:w].ljust(w), detail[:w].ljust(w)
+
+c1, c1_detail = battery("5h", c5_pct, f"reset {c5_reset}")
+c2, c2_detail = battery("Weekly", c7_pct, f"reset {c7_reset}")
+x1, x1_detail = battery(cx5_label, cx5_pct, cx5_reset)
+x2, x2_detail = battery(cx7_label, cx7_pct, f"reset {cx7_reset}")
+r1, r1_detail = battery("Auto", auto_pct, cycle_end)
+r2, r2_detail = battery("Premium", prem_pct, cycle_end)
+
 rows = [
     f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
     f"| {rule()} | {rule()} | {rule()} |",
     f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
-    f"| {cell(f'5h · {c5_pct} used', f'resets {c5_reset}')} | {codex_row1(cx5_label, cx5_pct, cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
-    f"| {c5_bar}{' ' * max(1, w - len(c5_bar))} | {codex_bar(cx5_bar, cx5_pct)} | {ca_bar}{' ' * max(1, w - len(ca_bar))} |",
-    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
-    f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {codex_row2(cx7_label, cx7_pct, cx7_reset)} | {cell(f'Premium · {prem_pct}')} |",
-    f"| {c7_bar}{' ' * max(1, w - len(c7_bar))} | {codex_bar(cx7_bar, cx7_pct)} | {cp_bar}{' ' * max(1, w - len(cp_bar))} |",
+    f"| {c1} | {x1} | {r1} |",
+    f"| {c1_detail} | {x1_detail} | {r1_detail} |",
+    f"| {c2} | {x2} | {r2} |",
+    f"| {c2_detail} | {x2_detail} | {r2_detail} |",
 ]
 print("\n".join(rows))
 PYEOF
 )
 
 SUPER_LINE=$(python3 << PYEOF
-w = int("""${LAYOUT}""") - 2
-label = "All providers"
-bar = """${SUPER_BAR}"""
-pct = """${SUPER_PCT_LABEL}"""
-super_sum = """${SUPER_SUM}"""
-summ = f"({super_sum} combined)"
-tail = f"{pct}  {summ}"
-gap = max(2, w - len(label) - len(bar) - len(tail))
-print(f"{label}  {bar}{' ' * gap}{tail}")
+try:
+    pct = max(0.0, min(100.0, float("""${SUPER_PCT}""")))
+except Exception:
+    pct = 0
+left = max(0, 100 - pct)
+if left <= 0:
+    filled = 0
+elif left >= 100:
+    filled = 5
+else:
+    filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
+meter = "▰" * filled + "▱" * (5 - filled)
+print("All providers")
+print(f"{meter}  {left:g}% left · ${SUPER_SUM} combined")
 PYEOF
 )
 
@@ -1740,11 +1776,14 @@ for line in sys.stdin:
     elif raw.startswith("Claude Code") or "| Codex CLI" in raw:
         raw = f"{BOLD}{GREEN}{raw}{RESET}"
     elif set(raw.replace("|", "").replace(" ", "")) <= {"-"}:
-        raw = f"{DIM}{'─' * min(84, WIDTH)}{RESET}"
+        divider = "─" * min(84, WIDTH)
+        raw = f"{DIM}{divider}{RESET}"
     elif raw.startswith("Combined load") or raw == "claude · codex · cursor":
         raw = f"{DIM}{raw}{RESET}"
     else:
         raw = f"{GREEN}{raw}{RESET}"
+    if "▱" in raw:
+        raw = raw.replace("▱", f"{DIM}▱{GREEN}")
     vis = re.sub(r"\033\[[0-9;]*m", "", raw)
     if not vis.strip():
         print(raw)

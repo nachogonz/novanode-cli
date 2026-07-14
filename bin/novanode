@@ -675,6 +675,25 @@ def pct_number(value):
     except Exception:
         return None
 
+def token_battery(used_value):
+    used = pct_number(used_value)
+    if used is None:
+        return f"{DIM}[▱▱▱▱▱]{RESET}", "n/a"
+    left = max(0.0, min(100.0, 100.0 - used))
+    if left <= 0:
+        filled = 0
+    elif left >= 100:
+        filled = 5
+    else:
+        filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
+    charge_tone = RED if left <= 0 else GREEN
+    meter = (
+        f"{DIM}[{RESET}{charge_tone}{'▰' * filled}"
+        f"{DIM}{'▱' * (5 - filled)}]{RESET}"
+    )
+    shown = f"{left:g}%"
+    return meter, shown
+
 for line in raw.splitlines():
     cols = line.split("\t")
     if len(cols) < 11:
@@ -734,12 +753,14 @@ def compact_provider(provider):
     exhausted = used is not None and used >= 100
     tone = RED if exhausted else (GREEN if provider["key"] == active else DIM)
     model = models.get(provider["key"], "") or "default"
-    stat = fmt_pct(provider["used1"])
+    meter, remaining = token_battery(provider["used1"])
     parts = [provider["key"]]
-    if model and model != stat:
+    if model:
         parts.append(model)
-    parts.append(stat)
-    return f"{tone}{selected_mark} {' '.join(parts)}{RESET}"
+    return (
+        f"{tone}{selected_mark} {' '.join(parts)}{RESET} "
+        f"{meter} {DIM}{remaining}{RESET}"
+    )
 
 def header_usage(provider):
     if not provider:
@@ -1373,6 +1394,27 @@ def put(row, text):
     if 0 <= row < height:
         screen[row] = fit(text, width)
 
+def provider_rows():
+    chunks = [compact_provider(p) for p in providers_sorted] if providers else []
+    if not chunks:
+        return [f"{DIM}usage unavailable{RESET}"]
+    limit = max(20, card_w - 4)
+    rows = []
+    current = ""
+    for chunk in chunks:
+        candidate = chunk if not current else f"{current}   {chunk}"
+        if current and len(strip_ansi(candidate)) > limit:
+            rows.append(current)
+            current = chunk
+        else:
+            current = candidate
+    if current:
+        rows.append(current)
+    return rows
+
+provider_strip_rows = provider_rows()
+provider_h = len(provider_strip_rows)
+
 def input_card(start_row):
     for idx, row_text in enumerate(input_rows_visible):
         prompt = f"{BOLD}{GREEN}›{RESET} " if idx == 0 and first_visible_input == 0 else "  "
@@ -1386,11 +1428,8 @@ def input_card(start_row):
             start_row + idx,
             " " * card_left + f"{ORANGE}▎{RESET}{GRAY_BG}{content}{RESET}",
         )
-    if providers:
-        provider_strip = "   ".join(compact_provider(p) for p in providers_sorted)
-    else:
-        provider_strip = f"{DIM}usage unavailable{RESET}"
-    put(start_row + input_h, " " * (card_left + 2) + provider_strip)
+    for index, provider_strip in enumerate(provider_strip_rows):
+        put(start_row + input_h + index, " " * (card_left + 2) + provider_strip)
 
 if not has_chat:
     hero = cached_hero_lines(min(38, max(20, width - 16)), 4)
@@ -1407,23 +1446,25 @@ if not has_chat:
     input_start_row = hero_start + len(hero) + 5
     input_card(input_start_row)
     tip = f"{ORANGE}● Tip{RESET}{DIM}  /claude  ·  /codex  ·  /cursor{RESET}"
-    put(input_start_row + input_h + 4, center_line(tip))
+    put(input_start_row + input_h + provider_h + 3, center_line(tip))
 else:
     title_left = f" {BOLD}{ORANGE}NovaNode{RESET}{DIM}  chat{RESET}"
     if selected:
         header_window = selected.get("p1") or "5h"
-        header_usage = fmt_pct(selected.get("used1", "n/a"))
+        header_battery, header_usage = token_battery(selected.get("used1", "n/a"))
     else:
         header_window = "5h"
+        header_battery, header_usage = token_battery("n/a")
         header_usage = "n/a"
+    header_remaining = f"{header_usage} left" if header_usage != "n/a" else "n/a"
     title_right = (
         f"{GREEN}{active}{RESET}{DIM} · {active_model}"
-        f"  ·  {header_window} {header_usage} used{RESET} "
+        f"  ·  {header_window} {header_battery} {header_remaining}{RESET} "
     )
     put(0, status_row(title_left, title_right, width))
     put(1, f"{DIM}{'─' * width}{RESET}")
 
-    input_start_row = height - input_h - 1
+    input_start_row = height - input_h - provider_h
     status_row_index = input_start_row - 1
     chat_start_row = 2
     chat_h = max(1, status_row_index - chat_start_row)
