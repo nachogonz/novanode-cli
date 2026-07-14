@@ -567,7 +567,10 @@ render_screen() {
   local models="${5:-}"
   local input_buffer="${6:-}"
   local input_cursor="${7:-0}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$models" "$input_buffer" "$input_cursor" << 'PYEOF'
+  local render_mode="${8:-full}"
+  # Scrolling is intentionally disabled: always render the latest chat frame.
+  local chat_scroll="0"
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" "$models" "$input_buffer" "$input_cursor" "$chat_scroll" "$render_mode" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
@@ -1271,15 +1274,28 @@ def wrap_input(buf, cur):
 
 all_input_rows = wrap_input(input_buffer, input_cursor)
 min_chat_h = 3
-max_input_h = max(1, height - len(header) - min_chat_h - 5)
+# Five fixed UI rows plus one untouched guard row keep the terminal from ever
+# reaching its scroll boundary, including terminals with eager bottom-row wrap.
+reserved_rows = 6
+max_input_h = max(1, height - len(header) - min_chat_h - reserved_rows)
 first_visible_input = max(0, len(all_input_rows) - max_input_h)
 input_rows_visible = all_input_rows[first_visible_input:]
 input_h = len(input_rows_visible)
 
-chat_h = max(min_chat_h, height - len(header) - input_h - 5)
-visible_chat = chat_lines[-chat_h:]
+chat_h = max(min_chat_h, height - len(header) - input_h - reserved_rows)
+try:
+    chat_scroll = max(0, int(sys.argv[10]))
+except Exception:
+    chat_scroll = 0
+chat_scroll = min(chat_scroll, max(0, len(chat_lines) - chat_h))
+chat_end = len(chat_lines) - chat_scroll
+chat_start = max(0, chat_end - chat_h)
+visible_chat = chat_lines[chat_start:chat_end]
 
-sys.stdout.write("\033[H\033[2J")
+render_mode = sys.argv[11] if len(sys.argv) > 11 else "full"
+# Render each frame atomically where synchronized terminal updates are
+# supported. Other terminals safely ignore this private mode.
+sys.stdout.write("\033[?2026h\033[H" + ("\033[2J" if render_mode == "full" else ""))
 for line in header:
     print(line)
 print()
@@ -1321,7 +1337,7 @@ print(border)
 token_footer = f"{DIM}{token_status}{RESET}" if token_status else ""
 sys.stdout.write(fit(status_row(prov_status, token_footer, width), width))
 
-if state_line:
+if state_line and state_line != "Press Ctrl+C again to quit NovaNode":
     sys.stdout.write("\033[?25l")
 else:
     cursor_row_total = input_cursor // input_max_width
@@ -1337,9 +1353,16 @@ else:
         cursor_col = input_max_width
     else:
         cursor_row_visible = cursor_row_total - first_visible_input
-    up = 1 + input_h - cursor_row_visible
-    col_offset = input_prefix_w + cursor_col
-    sys.stdout.write(f"\r\033[{up}A\033[{col_offset}C\033[?25h")
+    # Always restore editor focus with an absolute screen coordinate. Relative
+    # cursor moves can drift after wheel events on macOS terminals even though
+    # the alternate-screen contents themselves remain fixed.
+    input_start_row = len(header) + chat_h + 4
+    cursor_screen_row = input_start_row + cursor_row_visible
+    cursor_screen_col = input_prefix_w + cursor_col + 1
+    sys.stdout.write(
+        f"\033[{cursor_screen_row};{cursor_screen_col}H\033[?25h"
+    )
+sys.stdout.write("\033[?2026l")
 sys.stdout.flush()
 PYEOF
 }
@@ -1376,6 +1399,7 @@ pending_prompt=""
 awaiting_model=0
 model_picker_provider=""
 model_picker_options=()
+CHAT_SCROLL_OFFSET=0
 usage_data="$(load_usage)"
 choose_default_provider
 
@@ -1430,22 +1454,43 @@ models_arg() {
     "${model_codex:-$default_model_codex}"
 }
 
+ORIGINAL_STTY=""
+
 enter_live_screen() {
+  if [ -t 0 ]; then
+    ORIGINAL_STTY="$(stty -g 2>/dev/null || true)"
+    # Deliver Ctrl+C to the editor as \x03 so it can implement the same
+    # clear-then-exit interaction as Claude instead of receiving SIGINT.
+    # `intr undef` is essential on macOS Bash 3: even if Bash temporarily
+    # toggles ISIG internally, Ctrl+C remains an ordinary input byte.
+    stty -echo -icanon min 1 time 0 -isig intr undef 2>/dev/null || true
+  fi
   if [ -t 1 ]; then
-    printf "\033[?1049h\033[?2004l\033[H\033[?25h"
+    # Keep the dashboard inside one fixed alternate-screen viewport. Disabling
+    # autowrap prevents a terminal-width row from spilling into scrollback.
+    # Capture wheel/click events inside the alternate-screen environment. The
+    # input state machine consumes the complete report and only wheel events
+    # move chat history, so the host terminal never enters its own scrollback.
+    printf "\033[?1049h\033[?7l\033[?1000l\033[?1002l\033[?1003h\033[?1006h\033[?1007l\033[?2004l\033[H\033[2J\033[3J\033[?25h"
   fi
 }
 
 leave_live_screen() {
+  if [ -t 0 ] && [ -n "$ORIGINAL_STTY" ]; then
+    stty "$ORIGINAL_STTY" 2>/dev/null || true
+  fi
   if [ -t 1 ]; then
-    printf "\033[?25h\033[?2004l\033[?1049l"
+    printf "\033[?2026h\033[?25h\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?1007l\033[?7h\033[?2004l\033[H\033[2J\033[?1049l\033[?2026l"
   else
-    printf "\033[?25h\033[?2004l"
+    printf "\033[?25h\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?1007l\033[?7h\033[?2004l"
   fi
 }
 
 TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
 trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null; leave_live_screen' EXIT
+CTRL_C_SIGNAL=0
+CTRL_C_BYTE_SEEN=0
+trap 'if [ "${CTRL_C_BYTE_SEEN:-0}" -eq 1 ]; then CTRL_C_BYTE_SEEN=0; else CTRL_C_SIGNAL=1; fi' INT
 
 snapshot_git() {
   command -v git >/dev/null 2>&1 || return 0
@@ -1506,14 +1551,29 @@ run_with_activity() {
   local anim_pid=$!
 
   local cancelled=0
-  local key
+  local key esc_next esc_tail esc_wait="1"
+  if (( ${BASH_VERSINFO[0]:-0} >= 4 )); then
+    esc_wait="0.05"
+  fi
   while kill -0 "$run_pid" 2>/dev/null; do
     if IFS= read -rsn1 -t 1 key 2>/dev/null; then
       if [ "$key" = $'\e' ]; then
-        cancelled=1
-        printf "NovaNode: run cancelled (ESC). Provider process terminated.\n" >> "$transcript_file"
-        kill_process_tree "$run_pid"
-        break
+        esc_next=""
+        IFS= read -rsn1 -t "$esc_wait" esc_next 2>/dev/null || :
+        if [ -z "$esc_next" ]; then
+          cancelled=1
+          printf "NovaNode: run cancelled (ESC). Provider process terminated.\n" >> "$transcript_file"
+          kill_process_tree "$run_pid"
+          break
+        fi
+        # Mouse reports and navigation keys also begin with ESC. Drain their
+        # remaining CSI bytes instead of treating them as cancellation.
+        if [ "$esc_next" = "[" ]; then
+          esc_tail=""
+          while IFS= read -rsn1 -t "$esc_wait" esc_tail 2>/dev/null; do
+            case "$esc_tail" in M|m|~|A|B|C|D) break ;; esac
+          done
+        fi
       fi
     fi
   done
@@ -1541,30 +1601,53 @@ read_prompt() {
     IFS= read -r REPLY
     return $?
   fi
-  local buffer="" cursor=0
-  local key e1 e2 tail paste_more start
+  local buffer="" cursor=0 ctrl_c_armed=0 pending_key="" input_notice=""
+  local key e1 e2 tail paste_more start mouse_seq mouse_char mouse_button key_from_signal=0 skip_redraw=0
   local t_esc="1" has_frac=0
   if (( ${BASH_VERSINFO[0]:-0} >= 4 )); then
     has_frac=1
     t_esc="0.05"
   fi
-  render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+  render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "$input_notice" "$(models_arg)" "$buffer" "$cursor"
   while true; do
-    if ! IFS= read -rsn1 key; then
-      REPLY=""
-      return 1
+    CTRL_C_BYTE_SEEN=0
+    key_from_signal=0
+    skip_redraw=0
+    if [ -n "$pending_key" ]; then
+      key="$pending_key"
+      pending_key=""
+    elif [ "$CTRL_C_SIGNAL" -eq 1 ]; then
+      CTRL_C_SIGNAL=0
+      key=$'\x03'
+      key_from_signal=1
+    else
+      # Bash 3 can briefly restore ISIG around `read -n`. Reassert raw signal
+      # handling directly before the read so Ctrl+C is always queued as a byte
+      # and never waits for a later key to wake the editor.
+      stty -isig -icanon -echo min 1 time 0 intr undef 2>/dev/null || true
+      if IFS= read -rsn1 key; then
+        :
+      elif [ "$CTRL_C_SIGNAL" -eq 1 ]; then
+        CTRL_C_SIGNAL=0
+        key=$'\x03'
+        key_from_signal=1
+      else
+        REPLY=""
+        return 1
+      fi
+    fi
+    if [ "$CTRL_C_SIGNAL" -eq 1 ]; then
+      # A SIGINT may arrive just after read returned on macOS Bash 3.
+      CTRL_C_SIGNAL=0
+      if [[ "$key" != $'\x03' ]]; then
+        key=$'\x03'
+        key_from_signal=1
+      fi
     fi
     if [[ -z "$key" ]]; then
       local peek=""
       if [ "$has_frac" -eq 1 ]; then
         IFS= read -rsn1 -t 0.005 peek 2>/dev/null || :
-      else
-        local _pk_saved="" _pk_drain=""
-        _pk_saved=$(stty -g 2>/dev/null)
-        stty -icanon min 0 time 0 2>/dev/null
-        _pk_drain=$(dd bs=1024 count=1 2>/dev/null || true)
-        [ -n "$_pk_saved" ] && stty "$_pk_saved" 2>/dev/null
-        peek="$_pk_drain"
       fi
       if [ -z "$peek" ]; then
         REPLY="$buffer"
@@ -1582,15 +1665,32 @@ read_prompt() {
             cursor=$((cursor + 1))
             continue
             ;;
-          $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08')
+          $'\x03')
+            CTRL_C_SIGNAL=0
+            CTRL_C_BYTE_SEEN=1
+            if [ "$ctrl_c_armed" -eq 1 ]; then
+              REPLY=""
+              return 130
+            fi
+            buffer=""
+            cursor=0
+            ctrl_c_armed=1
+            input_notice="Press Ctrl+C again to quit NovaNode"
+            break
+            ;;
+          $'\x1b'|$'\x04'|$'\x7f'|$'\x08')
             break
             ;;
         esac
         buffer="${buffer:0:$cursor}${_pch}${buffer:$cursor}"
         cursor=$((cursor + 1))
       done
-      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "$input_notice" "$(models_arg)" "$buffer" "$cursor" update
       continue
+    fi
+    if [[ "$key" != $'\x03' && "$key" != $'\x1b' ]]; then
+      ctrl_c_armed=0
+      input_notice=""
     fi
     case "$key" in
       $'\x1b')
@@ -1602,7 +1702,22 @@ read_prompt() {
         fi
         IFS= read -rsn1 -t "$t_esc" e2 2>/dev/null || :
         case "$e1$e2" in
-          '[A'|'OA'|'[B'|'OB') ;;
+          '[<')
+            mouse_seq=""
+            mouse_char=""
+            while [ "${#mouse_seq}" -lt 64 ]; do
+              IFS= read -rsn1 -t "$t_esc" mouse_char 2>/dev/null || break
+              case "$mouse_char" in
+                M|m) break ;;
+                *) mouse_seq="${mouse_seq}${mouse_char}" ;;
+              esac
+            done
+            mouse_button="${mouse_seq%%;*}"
+            case "$mouse_button" in
+              *) skip_redraw=1 ;;
+            esac
+            ;;
+          '[A'|'OA'|'[B'|'OB') skip_redraw=1 ;;
           '[C'|'OC') [ "$cursor" -lt "${#buffer}" ] && cursor=$((cursor + 1)) ;;
           '[D'|'OD') [ "$cursor" -gt 0 ] && cursor=$((cursor - 1)) ;;
           '[H'|'OH') cursor=0 ;;
@@ -1618,6 +1733,7 @@ read_prompt() {
                 ;;
               '[1'|'[7') cursor=0 ;;
               '[4'|'[8') cursor="${#buffer}" ;;
+              '[5'|'[6') skip_redraw=1 ;;
             esac
             ;;
           *) ;;
@@ -1630,8 +1746,20 @@ read_prompt() {
         fi
         ;;
       $'\x03')
-        REPLY=""
-        return 130
+        CTRL_C_SIGNAL=0
+        if [ "$key_from_signal" -eq 0 ]; then
+          CTRL_C_BYTE_SEEN=1
+        fi
+        if [ "$ctrl_c_armed" -eq 1 ]; then
+          REPLY=""
+          return 130
+        fi
+        # Match the native provider CLIs: the first Ctrl+C clears the editor;
+        # a second consecutive Ctrl+C exits NovaNode.
+        buffer=""
+        cursor=0
+        ctrl_c_armed=1
+        input_notice="Press Ctrl+C again to quit NovaNode"
         ;;
       $'\x04')
         if [ -z "$buffer" ]; then
@@ -1660,45 +1788,71 @@ read_prompt() {
         buffer="${buffer:0:$cursor}${key}${buffer:$cursor}"
         cursor=$((cursor + 1))
         if [ "$has_frac" -eq 1 ]; then
-          while IFS= read -rsn1 -t 0.001 paste_more 2>/dev/null; do
+          while IFS= read -rsn1 -t 0.003 paste_more 2>/dev/null; do
             if [[ -z "$paste_more" ]]; then
               buffer="${buffer:0:$cursor} ${buffer:$cursor}"
               cursor=$((cursor + 1))
               continue
             fi
             case "$paste_more" in
-              $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08') break ;;
+              $'\x03')
+                CTRL_C_SIGNAL=0
+                CTRL_C_BYTE_SEEN=1
+                if [ "$ctrl_c_armed" -eq 1 ]; then
+                  REPLY=""
+                  return 130
+                fi
+                buffer=""
+                cursor=0
+                ctrl_c_armed=1
+                input_notice="Press Ctrl+C again to quit NovaNode"
+                break
+                ;;
+              $'\x1b'|$'\x04'|$'\x7f'|$'\x08')
+                pending_key="$paste_more"
+                break
+                ;;
             esac
             buffer="${buffer:0:$cursor}${paste_more}${buffer:$cursor}"
             cursor=$((cursor + 1))
           done
         else
-          local saved_stty="" drain="" di=0 dn=0 dch=""
-          saved_stty=$(stty -g 2>/dev/null)
-          stty -icanon min 0 time 0 2>/dev/null
-          drain=$(dd bs=1024 count=1 2>/dev/null || true)
-          [ -n "$saved_stty" ] && stty "$saved_stty" 2>/dev/null
-          dn=${#drain}
-          while [ "$di" -lt "$dn" ]; do
-            dch="${drain:$di:1}"
-            di=$((di + 1))
-            case "$dch" in
-              $'\n'|$'\r')
-                buffer="${buffer:0:$cursor} ${buffer:$cursor}"
-                cursor=$((cursor + 1))
-                continue
+          # macOS ships Bash 3, which only supports integer read timeouts.
+          # A zero-timeout drain batches already queued printable input while
+          # deferring control keys to the normal state machine.
+          while IFS= read -rsn1 -t 0 paste_more 2>/dev/null; do
+            if [[ -z "$paste_more" ]]; then
+              buffer="${buffer:0:$cursor} ${buffer:$cursor}"
+              cursor=$((cursor + 1))
+              continue
+            fi
+            case "$paste_more" in
+              $'\x03')
+                CTRL_C_SIGNAL=0
+                CTRL_C_BYTE_SEEN=1
+                if [ "$ctrl_c_armed" -eq 1 ]; then
+                  REPLY=""
+                  return 130
+                fi
+                buffer=""
+                cursor=0
+                ctrl_c_armed=1
+                input_notice="Press Ctrl+C again to quit NovaNode"
+                break
                 ;;
-              $'\x1b'|$'\x03'|$'\x04'|$'\x7f'|$'\x08')
+              $'\x1b'|$'\x04'|$'\x7f'|$'\x08')
+                pending_key="$paste_more"
                 break
                 ;;
             esac
-            buffer="${buffer:0:$cursor}${dch}${buffer:$cursor}"
+            buffer="${buffer:0:$cursor}${paste_more}${buffer:$cursor}"
             cursor=$((cursor + 1))
           done
         fi
         ;;
     esac
-    render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)" "$buffer" "$cursor"
+    [ "$skip_redraw" -eq 1 ] && continue
+    render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "$input_notice" "$(models_arg)" "$buffer" "$cursor" update
   done
 }
 
@@ -1748,6 +1902,7 @@ while true; do
 
   read_prompt || break
   input="$REPLY"
+  CHAT_SCROLL_OFFSET=0
 
   if [ "$awaiting_model" -eq 1 ]; then
     awaiting_model=0
@@ -1826,7 +1981,11 @@ while true; do
       ;;
     /open)
       printf "NovaNode: opening native %s interface.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+      leave_live_screen
       exec_provider "$active_provider"
+      # Re-enter only if exec failed and returned to this process.
+      enter_live_screen
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /use\ *)
       next="${input#/use }"
