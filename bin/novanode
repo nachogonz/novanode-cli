@@ -1051,7 +1051,7 @@ def clip_logo_line(text, max_w):
     out.append(RESET)
     return "".join(out)
 
-def render_mark_lines(path, mark_w=11, mark_h=6):
+def render_mark_lines(path, mark_w=11, mark_h=5):
     try:
         from PIL import Image  # noqa: F401
     except ImportError:
@@ -1074,7 +1074,7 @@ def render_wordmark_lines(path, char_w, char_h):
     return image_to_braille(word, char_w, char_h, whiten=True)
 
 def compose_logo(path, panel_w):
-    mark_w, mark_h, gap = 11, 6, 2
+    mark_w, mark_h, gap = 11, 5, 2
     mark = render_mark_lines(path, mark_w, mark_h)
     if not mark:
         return []
@@ -1103,7 +1103,7 @@ def cached_logo_lines(panel_w):
         _os.makedirs(cache_dir, exist_ok=True)
     except Exception:
         pass
-    cache_file = _os.path.join(cache_dir, f"logo-w{panel_w}-{src_mtime}.txt")
+    cache_file = _os.path.join(cache_dir, f"logo-v2-w{panel_w}-{src_mtime}.txt")
     if _os.path.isfile(cache_file):
         try:
             with open(cache_file) as fh:
@@ -1141,28 +1141,23 @@ def wrap_block(lines, width_limit):
     return out
 
 logo_block = cached_logo_lines(left_w) or [f"{BOLD}{WHITE}NovaNode{RESET}"]
+workspace_name = _os.path.basename(workspace_dir.rstrip(_os.sep)) or workspace_dir
 
 left_lines = (
     logo_block
     + [""]
-    + wrap_block(
-        [
-            f"{GREEN}Chat stays here; providers run in-house.{RESET}",
-            f"{DIM}Workspace {workspace_dir}{RESET}",
-            f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
-        ],
-        left_w,
-    )
+    + [
+        f"{GREEN}Chat stays here · providers run in-house.{RESET}",
+        f"{DIM}Workspace · {workspace_name}{RESET}",
+        f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
+    ]
 )
-right_lines = wrap_block(
-    [
-        f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
-        f"{DIM}/use claude · /use codex · /open{RESET}",
-        f"{DIM}/model <name> · /usage · /quit{RESET}",
-        f"{GREEN}Approve edits with y/n when asked.{RESET}",
-    ],
-    right_w,
-)
+right_lines = [
+    f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
+    f"{DIM}/use claude · /use codex · /open{RESET}",
+    f"{DIM}/model <name> · /usage · /quit{RESET}",
+    f"{GREEN}Approve edits with y/n when asked.{RESET}",
+]
 
 header_rows = max(len(left_lines), len(right_lines))
 header = [box_top_line()]
@@ -1274,9 +1269,9 @@ def wrap_input(buf, cur):
 
 all_input_rows = wrap_input(input_buffer, input_cursor)
 min_chat_h = 3
-# Five fixed UI rows plus one untouched guard row keep the terminal from ever
-# reaching its scroll boundary, including terminals with eager bottom-row wrap.
-reserved_rows = 6
+# The fixed spacer/status/border/footer rows consume five lines. Autowrap is
+# disabled for the live screen, so the footer can safely occupy the last row.
+reserved_rows = 5
 max_input_h = max(1, height - len(header) - min_chat_h - reserved_rows)
 first_visible_input = max(0, len(all_input_rows) - max_input_h)
 input_rows_visible = all_input_rows[first_visible_input:]
