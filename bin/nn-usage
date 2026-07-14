@@ -1681,8 +1681,7 @@ def battery(label, value, footer):
         meter = "▰▰" * filled + "▱▱" * (5 - filled)
         status = f"{left:g}% left"
     title = f"{label}"
-    scaled_meter = " ".join(meter[i:i + 2] for i in range(0, len(meter), 2))
-    gauge = f"  {scaled_meter}  {status}"
+    gauge = f"  {meter}  {status}"
     detail = f"  {footer}" if footer else ""
     return (
         title[:w].ljust(w),
@@ -1726,8 +1725,7 @@ else:
     filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
 meter = "▰▰" * filled + "▱▱" * (5 - filled)
 print("All providers")
-scaled_meter = " ".join(meter[i:i + 2] for i in range(0, len(meter), 2))
-print(f"{scaled_meter}  {left:g}% left · ${SUPER_SUM} combined")
+print(f"{meter}  {left:g}% left · ${SUPER_SUM} combined")
 PYEOF
 )
 
