@@ -1429,7 +1429,7 @@ def input_card(start_row):
         put(row, " " * card_left + rail + blank)
         row += 1
     for idx, row_text in enumerate(input_rows_visible):
-        prompt = f" {BOLD}{GREEN}›{RESET} " if idx == 0 and first_visible_input == 0 else "   "
+        prompt = f" {BOLD}{GREEN}❯{RESET} " if idx == 0 and first_visible_input == 0 else "   "
         if not row_text and not input_buffer and idx == 0:
             display_text = f"{DIM}Ask NovaNode anything…{RESET}"
         else:
