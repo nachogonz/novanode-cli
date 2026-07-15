@@ -873,14 +873,35 @@ def compact_tokens(value):
         return f"{value / 1_000:.0f}k"
     return str(value)
 
+def parse_iso_ts(text):
+    if not text:
+        return None
+    try:
+        s = text.rstrip("Z")
+        if text.endswith("Z"):
+            s += "+00:00"
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
 def fetch_session_usage():
     pattern = os.path.expanduser("~/.codex/sessions/**/*.jsonl")
     paths = sorted(glob.glob(pattern, recursive=True), reverse=True)
     for path in paths[:20]:
         latest = None
+        session_start = None
         try:
             with open(path, errors="ignore") as fh:
                 for line in fh:
+                    if session_start is None:
+                        try:
+                            first = json.loads(line)
+                            payload = first.get("payload") or {}
+                            session_start = parse_iso_ts(
+                                payload.get("timestamp") or first.get("timestamp")
+                            )
+                        except Exception:
+                            pass
                     if '"type":"token_count"' not in line:
                         continue
                     try:
@@ -899,7 +920,20 @@ def fetch_session_usage():
         if latest:
             used, context = latest
             pct = max(0, min(100, used / context * 100))
-            detail = f"{compact_tokens(used)} / {compact_tokens(context)} tokens"
+            reset_label = ""
+            if session_start is not None:
+                try:
+                    from datetime import timedelta, timezone
+                    reset_dt = session_start + timedelta(hours=5)
+                    if reset_dt.tzinfo is None:
+                        reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+                    now = datetime.now(reset_dt.tzinfo)
+                    if reset_dt > now:
+                        reset_label = f"reset {reset_dt.astimezone().strftime('%H:%M')}"
+                except Exception:
+                    reset_label = ""
+            token_detail = f"{compact_tokens(used)} / {compact_tokens(context)}"
+            detail = f"{reset_label} · {token_detail}" if reset_label else f"{token_detail} tokens"
             return pct, detail
     return None
 
