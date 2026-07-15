@@ -1715,7 +1715,7 @@ def battery(label, value, footer):
         meter = "▮▮" * filled + "▯▯" * (6 - filled)
         status = f"{left:g}%"
     title = f"{label}"
-    gauge = f"  {meter}  {status}"
+    gauge = f"{meter}  {status}"
     detail = f"  {footer}" if footer else ""
     return (
         title[:w].ljust(w),
