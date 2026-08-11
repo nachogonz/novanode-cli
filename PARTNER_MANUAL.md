@@ -429,13 +429,13 @@ sudo chown -R "$(id -u):$(id -g)" "$HOME/.npm"
 export npm_config_cache="${TMPDIR:-/tmp}/npm-cache-$USER"
 ```
 
-### Recommended: GitHub Actions release
+### Recommended: publish directly to the npm registry
 
-The repository workflow publishes when a `v*` tag is pushed and verifies that the tag matches `package.json`.
+The authoritative destination is `https://registry.npmjs.org`. GitHub is not required to publish the package.
 
-#### One-time npm/GitHub setup
+#### Sign in to npm
 
-1. Sign in to npm and confirm access to the scope:
+1. Authenticate against the public npm registry and confirm access to the scope:
 
    ```bash
    npm login
@@ -443,10 +443,26 @@ The repository workflow publishes when a `v*` tag is pushed and verifies that th
    npm access list packages @nakdev-npm
    ```
 
-2. Create a granular npm automation token with read/write access to `@nakdev-npm/novanode`.
-3. Add it to the GitHub repository as the Actions secret `NPM_TOKEN`.
+2. If the npm account requires two-factor authentication, keep the current OTP available for the publish command.
 
-Keep the automation token only in GitHub Secrets. Never place it in a project `.npmrc`, source file, commit, screenshot, or chat. A user-level `~/.npmrc` created by `npm login` is acceptable only for the direct local fallback.
+Never place an npm token in a project `.npmrc`, source file, commit, screenshot, or chat. A user-level `~/.npmrc` created by `npm login` is expected for local publication.
+
+If publishing reports `E404 Not Found` for the existing scoped package, npm is often hiding an authentication failure. Verify:
+
+```bash
+npm whoami --registry=https://registry.npmjs.org
+npm owner ls @nakdev-npm/novanode --registry=https://registry.npmjs.org
+```
+
+The active identity must be the package owner `nakdev-npm` (or another account granted write access). If `npm whoami` returns `401 Unauthorized`, refresh the login:
+
+```bash
+npm logout --registry=https://registry.npmjs.org
+npm login --registry=https://registry.npmjs.org --auth-type=web
+npm whoami --registry=https://registry.npmjs.org
+```
+
+Do not continue until `npm whoami` prints the authorized npm username.
 
 #### Verify the package
 
@@ -460,7 +476,7 @@ npm publish --dry-run --access public
 
 Confirm that the package contains `bin/nn`, `bin/nn-pbx`, `bin/nn-usage`, `bin/lib`, `README.md`, and this manual.
 
-#### Commit and tag 1.1.0
+#### Commit the exact release contents
 
 Review the worktree and commit the release normally:
 
@@ -470,23 +486,21 @@ git diff --check
 git add README.md PARTNER_MANUAL.md package.json .github/workflows/release.yml bin
 git commit -m "release telephony devkit 1.1.0"
 git push origin main
-git tag v1.1.0
-git push origin v1.1.0
 ```
 
-The tag push starts `.github/workflows/release.yml`, which:
-
-1. checks out the tagged commit
-2. verifies `v1.1.0` equals package version `1.1.0`
-3. runs the package checks
-4. publishes the public npm package
-5. creates a GitHub release
-
-Watch it with:
+#### Publish to the npm registry
 
 ```bash
-gh run watch
+npm publish --access public --registry=https://registry.npmjs.org
 ```
+
+If npm requests a one-time password:
+
+```bash
+npm publish --access public --registry=https://registry.npmjs.org --otp=123456
+```
+
+Replace `123456` with the current npm OTP. Never save it in a script.
 
 Verify publication:
 
@@ -496,28 +510,33 @@ npm install -g @nakdev-npm/novanode@1.1.0
 nn --version
 ```
 
-### Direct npm publication fallback
+### Optional: automate npm registry publication with GitHub Actions
 
-Use this only if GitHub Actions is intentionally not being used:
+The included `.github/workflows/release.yml` is an optional automation path. It also publishes to `registry.npmjs.org`; GitHub only runs the job.
+
+To use it, create a granular npm automation token with write access to `@nakdev-npm/novanode`, save it as the GitHub Actions secret `NPM_TOKEN`, then push a matching version tag:
 
 ```bash
-npm login
-npm run check
-npm publish --access public
+git tag v1.1.0
+git push origin v1.1.0
+gh run watch
 ```
 
-If you publish directly, do not then push `v1.1.0` while the release workflow is enabled, because the workflow will attempt to publish the same immutable npm version again.
+Choose exactly one publication path. If `1.1.0` was published directly with `npm publish`, do not push `v1.1.0` while the workflow is enabled, because npm versions are immutable and the workflow would attempt to publish the same version again.
 
 ### Future versions
 
-After `1.1.0`, start from a clean branch and let npm create the version commit and tag:
+For a direct npm registry release, update and commit the version before publishing:
 
 ```bash
-npm version patch   # or minor / major
-git push origin main --follow-tags
+npm version patch --no-git-tag-version   # or minor / major
+git add package.json
+git commit -m "release 1.1.1"
+git push origin main
+npm publish --access public --registry=https://registry.npmjs.org
 ```
 
-The GitHub Action will publish the version represented by that tag.
+If using the optional tag workflow instead, `npm version patch` can create the commit/tag and `git push origin main --follow-tags` triggers publication.
 
 ## 16. Release Checklist
 
