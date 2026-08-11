@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# NovaNode Telephony DevKit — main entry.
 set -u
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -8,4 +9,6 @@ while [ -h "$SOURCE" ]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$SCRIPT_DIR/$SOURCE"
 done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
-exec "${NOVANODE_PYTHON:-python3}" "$SCRIPT_DIR/lib/usage_cli.py" "$@"
+PYTHON="${NOVANODE_PYTHON:-python3}"
+
+exec "$PYTHON" "$SCRIPT_DIR/lib/main.py" "$@"

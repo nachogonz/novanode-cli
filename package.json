@@ -1,7 +1,7 @@
 {
   "name": "@nakdev-npm/novanode",
-  "version": "1.0.12",
-  "description": "Novanode AI token usage status CLI for Claude, Codex and Cursor",
+  "version": "1.1.0",
+  "description": "NovaNode Asterisk telephony DevKit and Claude/Codex usage TUI",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
   "homepage": "https://github.com/nachogonz/novanode-resgistry#readme",
@@ -16,13 +16,18 @@
     "cli",
     "claude",
     "codex",
-    "cursor",
     "ai",
     "usage",
     "tokens",
+    "asterisk",
+    "sip",
+    "pbx",
+    "tui",
     "novanode"
   ],
   "bin": {
+    "nn": "bin/nn",
+    "nn-pbx": "bin/nn-pbx",
     "novanode": "bin/novanode",
     "nn-usage": "bin/nn-usage"
   },
