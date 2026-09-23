@@ -29,7 +29,8 @@
     "nn": "bin/nn",
     "nn-pbx": "bin/nn-pbx",
     "novanode": "bin/novanode",
-    "nn-usage": "bin/nn-usage"
+    "nn-usage": "bin/nn-usage",
+    "nn-op": "bin/nn-op"
   },
   "files": [
     "bin",
@@ -48,7 +49,7 @@
     "access": "public"
   },
   "scripts": {
-    "check": "bash -n bin/nn bin/nn-pbx bin/nn-usage bin/novanode && python3 -m compileall -q bin/lib && python3 bin/lib/main.py --version",
+    "check": "bash -n bin/nn bin/nn-pbx bin/nn-usage bin/nn-op bin/novanode && python3 -m compileall -q bin/lib && python3 bin/lib/main.py --version && python3 bin/lib/op_cli.py --version",
     "prepublishOnly": "npm run check"
   }
 }

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# NovaNode 1Password wrapper — human-friendly layer on top of `op`.
+set -u
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$SCRIPT_DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+exec "${NOVANODE_PYTHON:-python3}" "$SCRIPT_DIR/lib/op_cli.py" "$@"
