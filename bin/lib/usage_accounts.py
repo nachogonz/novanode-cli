@@ -4,6 +4,7 @@ NovaNode stores profile metadata only. Authentication remains owned by the
 official Codex and Claude CLIs inside isolated provider configuration homes.
 """
 
+import getpass
 import json
 import os
 import re
@@ -201,48 +202,51 @@ def _credential_json(path):
         return {}
 
 
-def claude_token(account):
-    """Read the subscription token from Claude's provider-owned store.
-
-    Claude keys macOS Keychain entries by CLAUDE_CONFIG_DIR. Always selecting
-    the account path is important: looking up only the service can return a
-    different profile when several Claude accounts are connected.
-    """
-    if not account.get("home"):
-        token = (
-            os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-            or os.environ.get("CLAUDE_ACCESS_TOKEN")
+def _keychain_token(account_arg):
+    if sys.platform != "darwin":
+        return None
+    try:
+        raw = subprocess.check_output(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                account_arg,
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
         )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("claudeAiOauth", {}).get("accessToken") or payload.get("accessToken")
+
+
+def claude_token(account):
+    """Read Claude's OAuth token from the provider-owned credential store.
+
+    Claude Code currently keys its macOS Keychain entry by the login username,
+    not by CLAUDE_CONFIG_DIR. We try the path-scoped entry first (in case
+    future Claude versions isolate per profile), then fall back to the
+    standard user-scoped entry and to a `.credentials.json` inside the
+    isolated profile.
+    """
+    home = claude_config_home(account)
+    for arg in (home, os.environ.get("USER") or getpass.getuser()):
+        if not arg:
+            continue
+        token = _keychain_token(arg)
         if token:
             return token
-
-    home = claude_config_home(account)
-    if sys.platform == "darwin":
-        try:
-            raw = subprocess.check_output(
-                [
-                    "security",
-                    "find-generic-password",
-                    "-a",
-                    home,
-                    "-s",
-                    "Claude Code-credentials",
-                    "-w",
-                ],
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=3,
-            )
-            payload = json.loads(raw)
-            token = (
-                payload.get("claudeAiOauth", {}).get("accessToken")
-                if isinstance(payload, dict)
-                else None
-            )
-            if token:
-                return token
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
 
     payload = _credential_json(os.path.join(home, ".credentials.json"))
     return payload.get("claudeAiOauth", {}).get("accessToken") or payload.get("accessToken")
@@ -359,12 +363,6 @@ def connection_status(account):
         except ValueError:
             payload = {}
         connected = bool(payload.get("loggedIn"))
-        if connected and not claude_token(account):
-            return {
-                "connected": False,
-                "detail": "OAuth credential unavailable; reconnect",
-                "version": version,
-            }
         detail = payload.get("authMethod") if connected else "not connected"
         return {"connected": connected, "detail": detail or "connected", "version": version}
     except (OSError, subprocess.SubprocessError):
@@ -418,16 +416,6 @@ def connect_account(account):
         return False, f"{command} login exited with status {result.returncode}"
     status = connection_status(account)
     if not status["connected"]:
-        if provider == "claude" and "credential unavailable" in status.get("detail", ""):
-            if sys.platform == "darwin":
-                return False, (
-                    "Claude signed in, but macOS did not persist a readable OAuth credential. "
-                    "Run `claude doctor`, unlock or repair the login Keychain, then reconnect."
-                )
-            return False, (
-                "Claude signed in, but no OAuth credential was saved in this isolated profile. "
-                "Update Claude Code and reconnect."
-            )
         return False, "login finished but no active session was detected"
     now = datetime.now(timezone.utc).isoformat()
     account["connected_at"] = now

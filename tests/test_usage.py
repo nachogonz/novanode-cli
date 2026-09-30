@@ -80,17 +80,32 @@ class UsageTests(unittest.TestCase):
         args = call.call_args.args[0]
         self.assertEqual(args[args.index("-a") + 1], home)
 
-    def test_claude_status_rejects_login_without_durable_credential(self):
+    def test_claude_token_falls_back_to_user_scoped_keychain(self):
+        account = {"provider": "claude", "home": "/tmp/claude-profile", "managed": True}
+        credential = json.dumps({"claudeAiOauth": {"accessToken": "user-scoped-token"}})
+
+        def keychain(args, *_, **__):
+            if args[args.index("-a") + 1] == "nachogonzalez":
+                return credential
+            raise usage_accounts.subprocess.CalledProcessError(1, args)
+
+        with mock.patch.dict(os.environ, {"USER": "nachogonzalez"}, clear=True), \
+             mock.patch.object(usage_accounts.sys, "platform", "darwin"), \
+             mock.patch.object(usage_accounts.subprocess, "check_output", side_effect=keychain):
+            token = usage_accounts.claude_token(account)
+
+        self.assertEqual(token, "user-scoped-token")
+
+    def test_claude_status_trusts_provider_cli(self):
         account = {"provider": "claude", "home": "/tmp/claude-profile", "managed": True}
         result = mock.Mock(returncode=0, stdout='{"loggedIn":true,"authMethod":"claude.ai"}', stderr="")
         with mock.patch.object(usage_accounts.shutil, "which", return_value="/usr/bin/claude"), \
              mock.patch.object(usage_accounts, "provider_version", return_value="2.1.152"), \
-             mock.patch.object(usage_accounts.subprocess, "run", return_value=result), \
-             mock.patch.object(usage_accounts, "claude_token", return_value=None):
+             mock.patch.object(usage_accounts.subprocess, "run", return_value=result):
             status = usage_accounts.connection_status(account)
 
-        self.assertFalse(status["connected"])
-        self.assertIn("credential unavailable", status["detail"])
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["detail"], "claude.ai")
 
     def test_managed_profiles_ignore_shell_credentials_and_provider_overrides(self):
         account = {"provider": "claude", "home": "/tmp/claude-work", "managed": True}
