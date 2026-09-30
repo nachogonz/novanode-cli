@@ -150,11 +150,24 @@ cd my-app
 nnop                    # arrow-key dashboard
 ```
 
-The dashboard shows the current project/app/env and the vault fields for
-that combination. Secrets are hidden by default; press `Enter` on a row to
-reveal, `C` to copy it to the clipboard.
+The first-run dashboard starts with **Sign in to 1Password**. If the account
+has not been configured on this machine, choose **Add a 1Password account**;
+the official `op account add` wizard securely asks for the sign-in address,
+email, Secret Key, and account password. NovaNode does not read or persist
+those credentials. The authenticated session is held only while the dashboard
+is open.
 
-Hotkeys from the dashboard:
+After authentication, the dashboard offers workspace initialization or shows
+the current project/app/env and its vault fields. Secrets are hidden by
+default; press `Enter` on a row to reveal, `C` to copy it to the clipboard.
+The same account setup is also available directly:
+
+```sh
+nn-op account add
+nn-op accounts
+```
+
+Hotkeys from the authenticated project dashboard:
 
 - `A` — Add a secret (KEY + hidden VALUE, saved straight to the vault)
 - `I` — Import an existing `.env` file into the vault

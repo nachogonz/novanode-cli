@@ -60,19 +60,28 @@ def _run(
     check: bool = True,
     input_text: Optional[str] = None,
     inherit_tty: bool = False,
+    capture_stdout: bool = False,
     env: Optional[dict] = None,
     timeout: Optional[int] = 30,
 ):
     """Invoke `op` with sane defaults.
 
     inherit_tty=True lets `op signin` open the desktop app or prompt for a
-    passphrase interactively — nn-op never handles those credentials.
+    passphrase interactively — nn-op never handles those credentials. With
+    capture_stdout=True, stdin/stderr still belong to `op` while its session
+    token is captured instead of printed.
     """
     if not installed():
         raise OpError("1Password CLI (`op`) is not installed.", code=127)
     cmd = ["op", *args]
     if inherit_tty:
-        result = subprocess.run(cmd, env=env, timeout=timeout)
+        result = subprocess.run(
+            cmd,
+            env=env,
+            timeout=timeout,
+            stdout=subprocess.PIPE if capture_stdout else None,
+            text=capture_stdout,
+        )
         if check and result.returncode != 0:
             raise OpError(
                 f"`{' '.join(cmd)}` exited with code {result.returncode}.",
@@ -123,6 +132,14 @@ def account_list() -> List[dict]:
         return []
 
 
+def _remember_session(token: str, account: Optional[str] = None) -> None:
+    """Keep a session only for this nn-op process and commands it launches."""
+    os.environ["OP_SESSION"] = token
+    if account:
+        os.environ["OP_ACCOUNT"] = account
+        os.environ[f"OP_SESSION_{account}"] = token
+
+
 def signin(account: Optional[str] = None) -> int:
     """Delegate to `op signin` — `op` owns the credential prompt entirely."""
     args = ["signin"]
@@ -132,6 +149,47 @@ def signin(account: Optional[str] = None) -> int:
     return result.returncode
 
 
+def signin_session(account: Optional[str] = None) -> bool:
+    """Sign in interactively and retain the raw token in memory for this TUI."""
+    args = ["signin", "--raw"]
+    if account:
+        args += ["--account", account]
+    result = _run(
+        args,
+        inherit_tty=True,
+        capture_stdout=True,
+        check=False,
+        timeout=None,
+    )
+    token = (result.stdout or "").strip()
+    if result.returncode != 0 or not token:
+        return False
+    _remember_session(token, account)
+    return True
+
+
+def account_add(signin: bool = False) -> bool:
+    """Run 1Password's native account wizard, optionally retaining its session."""
+    args = ["account", "add"]
+    if signin:
+        args += ["--signin", "--raw"]
+    result = _run(
+        args,
+        inherit_tty=True,
+        capture_stdout=signin,
+        check=False,
+        timeout=None,
+    )
+    if result.returncode != 0:
+        return False
+    if signin:
+        token = (result.stdout or "").strip()
+        if not token:
+            return False
+        _remember_session(token)
+    return True
+
+
 def signout(account: Optional[str] = None, forget: bool = False) -> int:
     args = ["signout"]
     if account:
@@ -139,6 +197,10 @@ def signout(account: Optional[str] = None, forget: bool = False) -> int:
     if forget:
         args += ["--forget"]
     result = _run(args, inherit_tty=True, check=False, timeout=None)
+    os.environ.pop("OP_SESSION", None)
+    os.environ.pop("OP_ACCOUNT", None)
+    for key in [name for name in os.environ if name.startswith("OP_SESSION_")]:
+        os.environ.pop(key, None)
     return result.returncode
 
 

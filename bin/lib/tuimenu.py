@@ -6,6 +6,8 @@ pipes still work.
 """
 
 import os
+import re
+import shutil
 import sys
 import termios
 import tty
@@ -19,6 +21,7 @@ GREEN = "\033[38;5;82m"
 CYAN = "\033[38;5;51m"
 RED = "\033[38;5;196m"
 YELLOW = "\033[38;5;220m"
+ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
 def color_on():
@@ -27,6 +30,22 @@ def color_on():
 
 def paint(value, code):
     return f"{code}{value}{RESET}" if color_on() else value
+
+
+def visible_len(value):
+    return len(ANSI.sub("", str(value)))
+
+
+def fit(value, width):
+    """Pad a styled string to a terminal width, or safely truncate it."""
+    value = str(value)
+    length = visible_len(value)
+    if length <= width:
+        return value + " " * (width - length)
+    plain = ANSI.sub("", value)
+    if width <= 1:
+        return plain[:width]
+    return plain[:width - 1] + "…"
 
 
 def is_tty():
@@ -131,36 +150,90 @@ class Menu:
             if not self.items[self.selected].disabled:
                 return
 
-    def _render(self):
-        clear_screen()
+    def _dimensions(self):
+        terminal = shutil.get_terminal_size((84, 28))
+        width = max(36, min(88, terminal.columns - 4))
+        if terminal.columns < 40:
+            width = max(24, terminal.columns - 2)
+        return width, terminal.lines
+
+    def _window(self, terminal_lines, subtitle_lines):
+        """Keep the active row and footer visible on shorter terminals."""
+        fixed_lines = 9 + subtitle_lines + (2 if self.message else 0)
+        maximum = max(4, (terminal_lines - fixed_lines) // 2)
+        if len(self.items) <= maximum:
+            return 0, len(self.items)
+        start = max(0, self.selected - maximum // 2)
+        end = min(len(self.items), start + maximum)
+        start = max(0, end - maximum)
+        while start > 0 and self.items[start].divider:
+            start -= 1
+        return start, end
+
+    def _frame_line(self, value, width):
+        content_width = width - 4
+        print(
+            f"  {paint('│', ORANGE)} {fit(value, content_width)} "
+            f"{paint('│', ORANGE)}"
+        )
+
+    def _frame_border(self, left, right, width):
+        print(f"  {paint(left + '─' * (width - 2) + right, ORANGE)}")
+
+    def _render_frame(self, active_index=None, constrained=False):
+        width, terminal_lines = self._dimensions()
+        content_width = width - 4
+        subtitle_lines = self.subtitle.splitlines() if self.subtitle else []
+        start, end = (0, len(self.items))
+        if constrained:
+            start, end = self._window(terminal_lines, len(subtitle_lines))
+
         print()
-        print(f"  {paint(self.title, BOLD)}")
-        if self.subtitle:
-            print(f"  {paint(self.subtitle, DIM)}")
-        print(f"  {paint('─' * max(48, len(self.title) + 20), ORANGE)}")
-        print()
-        for index, item in enumerate(self.items):
+        self._frame_border("╭", "╮", width)
+        self._frame_line(paint(self.title, BOLD), width)
+        for line in subtitle_lines:
+            rendered = line if ANSI.search(line) else paint(line, DIM)
+            self._frame_line(rendered, width)
+        self._frame_border("├", "┤", width)
+
+        if start > 0:
+            self._frame_line(paint("↑  More", DIM), width)
+        for index in range(start, end):
+            item = self.items[index]
             if item.divider:
-                print()
+                self._frame_line("", width)
                 continue
             if item.heading:
-                print(f"  {paint(item.label, BOLD)}")
+                self._frame_line(paint(item.label.upper(), ORANGE), width)
                 if item.subtitle:
-                    print(f"  {paint(item.subtitle, DIM)}")
+                    self._frame_line(paint(f"  {item.subtitle}", DIM), width)
                 continue
-            selected = index == self.selected
-            arrow = paint("▸", ORANGE) if selected else " "
+
+            selected = index == active_index
+            marker = paint("▸", ORANGE) if selected else " "
             label = paint(item.label, BOLD) if selected else item.label
-            badge = f"  {paint(item.badge, item.badge_color)}" if item.badge else ""
-            print(f"  {arrow} {label}{badge}")
+            lead = f"{marker} {label}"
+            badge = paint(item.badge, item.badge_color) if item.badge else ""
+            if badge:
+                gap = max(1, content_width - visible_len(lead) - visible_len(badge))
+                lead = f"{lead}{' ' * gap}{badge}"
+            self._frame_line(lead, width)
             if item.subtitle:
-                print(f"     {paint(item.subtitle, DIM)}")
-        print()
-        if self.footer:
-            print(f"  {paint(self.footer, DIM)}")
+                self._frame_line(paint(f"    {item.subtitle}", DIM), width)
+        if end < len(self.items):
+            self._frame_line(paint("↓  More", DIM), width)
+
+        self._frame_border("├", "┤", width)
         if self.message:
-            print()
-            print(f"  {self.message}")
+            self._frame_line(self.message, width)
+            self._frame_border("├", "┤", width)
+        if self.footer:
+            self._frame_line(paint(self.footer, DIM), width)
+        self._frame_border("╰", "╯", width)
+
+    def _render(self):
+        clear_screen()
+        self._render_frame(active_index=self.selected, constrained=True)
 
     def run(self):
         """Run the menu loop. Returns the selected item's value, or None on
@@ -194,26 +267,7 @@ class Menu:
 
     def static_render(self):
         """Non-interactive rendering — plain list, no highlight."""
-        print()
-        print(f"  {paint(self.title, BOLD)}")
-        if self.subtitle:
-            print(f"  {paint(self.subtitle, DIM)}")
-        print(f"  {paint('─' * max(48, len(self.title) + 20), ORANGE)}")
-        print()
-        for item in self.items:
-            if item.divider:
-                print()
-                continue
-            if item.heading:
-                print(f"  {paint(item.label, BOLD)}")
-                continue
-            badge = f"  {paint(item.badge, item.badge_color)}" if item.badge else ""
-            print(f"    {item.label}{badge}")
-            if item.subtitle:
-                print(f"     {paint(item.subtitle, DIM)}")
-        print()
-        if self.footer:
-            print(f"  {paint(self.footer, DIM)}")
+        self._render_frame()
 
 
 def confirm(question, danger_word="delete"):
