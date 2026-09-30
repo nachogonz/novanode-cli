@@ -137,12 +137,52 @@ NovaNode-managed provider directory and its cached usage snapshot. Short-lived
 usage snapshots are discarded after two minutes, so old sessions cannot keep
 contributing stale percentages.
 
+## nn-op — 1Password wrapper (`nnop` for short)
+
+`nn-op` (or the shorter `nnop`) is a project-aware wrapper around the
+official [1Password CLI (`op`)](https://developer.1password.com/docs/cli/).
+It never stores tokens or values itself — every secret operation is
+delegated to `op`, which handles authentication, encryption, and the
+Keychain / 1Password app integration.
+
+```sh
+cd my-app
+nnop                    # arrow-key dashboard
+```
+
+The dashboard shows the current project/app/env and the vault fields for
+that combination. Secrets are hidden by default; press `Enter` on a row to
+reveal, `C` to copy it to the clipboard.
+
+Hotkeys from the dashboard:
+
+- `A` — Add a secret (KEY + hidden VALUE, saved straight to the vault)
+- `I` — Import an existing `.env` file into the vault
+- `P` — Pull the current env to a real `.env` file (marked as plaintext)
+- `T` — Write a `.env.template` full of `op://` references (safe to commit)
+- `U` — Switch which app/env is current
+- `R` — Refresh
+- `Q` / `Esc` — Quit
+
+If the directory doesn't have a `.novanode.yml` yet, the dashboard opens
+a guide that offers `G` to run `nn-op project init` in place.
+
+**Security model.** Nothing in the vault ever touches disk unless you
+explicitly run `env pull --materialize`. The Add / Import flows stream
+values into `op` on stdin — they aren't written to a temp file. Clipboard
+copy uses `pbcopy` / `xclip` / `wl-copy` directly.
+
+**Team sync.** See [WORKFLOWS.md](./WORKFLOWS.md) for the full two-sided
+walkthrough (owner sets up a client vault, teammate clones and gets a
+working `.env` in seconds).
+
 ## Requirements
 
 - Python 3.9+
 - OpenSSH client and key-based access to the lab hosts
 - A terminal with curses support
 - baresip with loopback-only `ctrl_tcp` for real phone controls
+- 1Password CLI (`op`) for `nn-op` / `nnop` (installed via `brew install --cask 1password-cli`)
 
 ## Install
 

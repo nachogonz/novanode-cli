@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import op  # noqa: E402
 
 
-VERSION = "1.2.6"
+VERSION = "1.2.8"
 
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
@@ -119,16 +119,16 @@ def _require_auth() -> dict:
         return identity
     print()
     print(f"  {_color('1Password authentication required.', ORANGE)}")
-    print(f"  {DIM}Starting `op signin` — the 1Password app will handle credentials.{RESET}")
+    if sys.platform == "darwin" and os.path.isdir("/Applications/1Password.app"):
+        print(f"  Enable {BOLD}Integrate with 1Password CLI{RESET} in the desktop")
+        print(f"  app's Settings → Developer, then re-run this command.")
+        print(f"  Run {_color('nn-op login', BOLD)} for the guided flow.")
+    else:
+        print(f"  Run {BOLD}eval $(op signin){RESET} in your shell, then re-run this")
+        print(f"  command. `op signin` prints shell exports that only stick when")
+        print(f"  eval'd by your parent shell.")
     print()
-    if op.signin() != 0:
-        _print_error("Sign-in cancelled or failed.")
-        raise SystemExit(1)
-    identity = op.whoami()
-    if not identity:
-        _print_error("Still not signed in after `op signin`. Try `nn-op doctor`.")
-        raise SystemExit(1)
-    return identity
+    raise SystemExit(1)
 
 
 # ── project context ───────────────────────────────────────────────────
@@ -384,11 +384,48 @@ def cmd_login(_args: List[str]) -> int:
         print(f"  User:    {identity.get('email', 'n/a')}")
         print(f"  {DIM}Ready to use nn-op.{RESET}\n")
         return 0
+
+    _print_header("1Password")
+    darwin = sys.platform == "darwin"
+    app_path = "/Applications/1Password.app"
+    have_app = darwin and os.path.isdir(app_path)
+
+    print(f"  {_color('Not signed in.', ORANGE)}")
     print()
-    print(f"  {_color('NovaNode · 1Password', BOLD)}")
-    print(f"  {DIM}Delegating to `op signin`. 1Password owns the credential prompt.{RESET}")
+    if have_app:
+        print(f"  {BOLD}Recommended (1Password 8+ desktop integration):{RESET}")
+        print(f"    1. Open 1Password → Settings → Developer")
+        print(f"    2. Enable {BOLD}Integrate with 1Password CLI{RESET}")
+        print(f"    3. Enable {BOLD}Biometric unlock for 1Password CLI{RESET} (Touch ID)")
+        print(f"    4. Re-run {_color('nn-op status', BOLD)} — no `signin` needed.")
+        print()
+        try:
+            answer = input(f"  Open 1Password now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer in ("", "y", "yes"):
+            try:
+                subprocess.run(["open", "-a", "1Password"], check=False, timeout=5)
+                print(f"  {DIM}Opened. After enabling the toggles, run `nn-op status`.{RESET}\n")
+            except (OSError, subprocess.SubprocessError):
+                print(f"  {DIM}Could not launch 1Password. Open it manually.{RESET}\n")
+        print()
+        print(f"  {DIM}Legacy fallback (no desktop app / headless):{RESET}")
+        print(f"    Run this directly in your shell (not through nn-op):")
+        print(f"      {BOLD}eval $(op signin){RESET}")
+        return 0
+
+    # Non-macOS or no app installed → CLI-only fallback with clear
+    # instructions the user must follow themselves.
+    print(f"  Sign in with the official CLI in your own shell so the session")
+    print(f"  environment sticks; nn-op cannot inject `op` exports into your")
+    print(f"  parent shell from a subprocess.")
     print()
-    return op.signin()
+    print(f"    {BOLD}eval $(op signin){RESET}")
+    print()
+    print(f"  Then re-run {BOLD}nn-op status{RESET} to confirm you're signed in.")
+    print()
+    return 0
 
 
 def cmd_logout(_args: List[str]) -> int:
@@ -1141,7 +1178,8 @@ def _op_status_line() -> str:
     identity = op.whoami()
     if identity:
         return tm.paint(f"✓ 1Password · {identity.get('email', '')}", tm.GREEN)
-    return tm.paint("✗ not signed in", tm.RED)
+    hint = "press L for the guided sign-in flow"
+    return tm.paint(f"✗ not signed in · {hint}", tm.RED)
 
 
 def _envs_snapshot(ctx: "ProjectContext"):
@@ -1163,33 +1201,155 @@ def _envs_snapshot(ctx: "ProjectContext"):
     return title, rows
 
 
+def _copy_to_clipboard(value: str) -> bool:
+    """Copy to the OS clipboard using pbcopy/xclip/wl-copy. Returns True on
+    success. Never touches disk — pipes value into the copy tool's stdin."""
+    import subprocess
+    for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+        try:
+            proc = subprocess.run(cmd, input=value, text=True, timeout=3)
+            if proc.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+    return False
+
+
+def _quick_add_secret(ctx: "ProjectContext") -> Tuple[bool, str]:
+    """Prompt for KEY + hidden VALUE and write via `op item edit`/`create`.
+    No secret ever touches disk — the value is streamed to `op` on stdin."""
+    import tuimenu as tm
+    _require_installed()
+    if not op.whoami():
+        return False, "Sign in to 1Password first (press L)"
+    if not ctx.project:
+        return False, "No project selected — press G to run project init"
+    if not ctx.default_app or not ctx.default_env:
+        return False, "No app/env selected — press U to switch"
+    tm.clear_screen()
+    print()
+    print(f"  {tm.paint('Add secret', tm.BOLD)}  "
+          f"{tm.paint(f'{ctx.project} / {ctx.default_app} · {ctx.default_env}', tm.DIM)}")
+    print(f"  {tm.paint('Secret goes straight into 1Password. NovaNode never stores it.', tm.DIM)}")
+    key = tm.prompt("Variable name")
+    if not key:
+        return False, "No secret added"
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        return False, f"Invalid name: {key!r}"
+    value = tm.prompt("Value (hidden)", mask=True)
+    if not value:
+        return False, "No secret added"
+    title = f"{ctx.default_app}-{ctx.default_env}"
+    assignments = [f"{key}[password]={value}"]
+    try:
+        op.item_edit(title, vault=ctx.project, assignments=assignments)
+    except op.OpError as err:
+        message = (err.stderr or "").lower()
+        if "isn't an item" in message or "not found" in message or "no item found" in message:
+            try:
+                op.item_create(
+                    title=title, vault=ctx.project, category="Secure Note",
+                    fields=assignments,
+                    tags=[ctx.default_app, ctx.default_env, "novanode-env"],
+                )
+            except op.OpError as inner:
+                return False, (inner.stderr or str(inner)).strip()
+        else:
+            return False, (err.stderr or str(err)).strip()
+    return True, f"✓ Saved {key} to {ctx.project} / {title}"
+
+
 def _cmd_interactive_tui(ctx: "ProjectContext") -> int:
     import tuimenu as tm
     revealed: set = set()
     message = ""
     while True:
-        title_line = "nn-op  ·  Secrets & envs"
-        subtitle = _op_status_line()
+        ctx = _context()
+        status = _op_status_line()
+        banner = tm.paint(
+            "Secrets stay in 1Password · nn-op is a wrapper around `op`",
+            tm.DIM,
+        )
+        location = ""
         if ctx.project:
-            where = ctx.project
+            location = ctx.project
             if ctx.default_app and ctx.default_env:
-                where += f" / {ctx.default_app} · {ctx.default_env}"
+                location += f" / {ctx.default_app} · {ctx.default_env}"
             if ctx.root:
-                where += f"  ({os.path.relpath(ctx.root, os.getcwd()) or '.'})"
-            subtitle = subtitle + "   " + tm.paint(where, tm.DIM)
+                location += f"  ({os.path.relpath(ctx.root, os.getcwd()) or '.'})"
         else:
-            subtitle = subtitle + "   " + tm.paint("no .novanode.yml in this tree", tm.DIM)
+            location = "no .novanode.yml in this tree"
+        subtitle_lines = [status, banner, tm.paint(location, tm.DIM)]
+        subtitle = "\n  ".join(subtitle_lines)
+
+        # No-project guide → nudge toward `project init`.
+        if not ctx.project:
+            items = [
+                tm.Item(label="Not a NovaNode project yet", heading=True,
+                        subtitle="Choose a starting point below."),
+                tm.Item(divider=True),
+                tm.Item(label="G · Initialise this directory",
+                        value=("cmd", ["project", "init"]),
+                        subtitle="Creates .novanode.yml and links a 1Password vault"),
+                tm.Item(label="List existing projects",
+                        value=("cmd", ["project", "list"])),
+                tm.Item(divider=True),
+                tm.Item(label="Sign in to 1Password",
+                        value=("cmd", ["login"])),
+                tm.Item(label="Status / doctor",
+                        value=("cmd", ["status"])),
+                tm.Item(divider=True),
+                tm.Item(label="Quit", value=("quit", None)),
+            ]
+            menu = tm.Menu(
+                title="nn-op  ·  Secrets & envs",
+                subtitle=subtitle,
+                items=items,
+                footer="↑↓ nav · Enter · G init · Q quit",
+                message=message,
+                hotkeys={"g": ("cmd", ["project", "init"]),
+                         "l": ("cmd", ["login"])},
+            )
+            message = ""
+            choice = menu.run()
+            if choice is None or (isinstance(choice, tuple) and choice[0] == "quit"):
+                return 0
+            kind, payload = choice
+            if kind == "cmd":
+                tm.clear_screen()
+                print()
+                dispatch(list(payload))
+                print()
+                try:
+                    input("  Press Enter to return… ")
+                except (EOFError, KeyboardInterrupt):
+                    return 0
+            continue
 
         env_title, env_rows = (None, [])
-        if op.installed() and op.whoami():
+        signed_in = op.installed() and op.whoami()
+        if signed_in:
             env_title, env_rows = _envs_snapshot(ctx)
 
         items = []
-        if env_title and env_rows is not None:
-            items.append(tm.Item(label=env_title, heading=True,
-                                  subtitle=f"{len(env_rows)} field(s) · Enter reveals a secret"))
+        # Bootstrap hint for teammates who just cloned a repo — first thing
+        # they see is a one-key path to a working local .env.
+        if signed_in and env_title and env_rows:
+            items.append(tm.Item(
+                label="Team sync", heading=True,
+                subtitle="P pulls the shared env to .env · I pushes yours to the vault",
+            ))
+            items.append(tm.Item(divider=True))
+        if env_title and env_rows:
+            items.append(tm.Item(
+                label=env_title, heading=True,
+                subtitle=f"{len(env_rows)} field(s) · Enter reveals · C copies to clipboard",
+            ))
             for label, value, concealed in env_rows:
-                display = value if not concealed or label in revealed else "•" * min(24, max(4, len(value) or 8))
+                display = (
+                    value if not concealed or label in revealed
+                    else "•" * min(24, max(4, len(value) or 8))
+                )
                 subline = tm.paint(display, tm.DIM if concealed else "")
                 items.append(tm.Item(
                     label=f"{label:<26}",
@@ -1198,43 +1358,73 @@ def _cmd_interactive_tui(ctx: "ProjectContext") -> int:
                 ))
             items.append(tm.Item(divider=True))
         elif env_title and env_rows is None:
-            items.append(tm.Item(label=env_title, heading=True,
-                                  subtitle="item not found in vault — Set a secret to create it"))
+            items.append(tm.Item(
+                label=env_title, heading=True,
+                subtitle="No secrets yet in this vault item — press A to add the first one.",
+            ))
             items.append(tm.Item(divider=True))
         else:
-            items.append(tm.Item(label="No app/env selected", heading=True,
-                                  subtitle="Pick or initialise one below"))
+            items.append(tm.Item(
+                label="No app or env selected", heading=True,
+                subtitle="Press U to pick one, or A to add a secret to the default app/env.",
+            ))
             items.append(tm.Item(divider=True))
 
         items += [
-            tm.Item(label="Set / update a secret",   value=("cmd", ["env", "set"])),
-            tm.Item(label="Import a .env file",      value=("cmd", ["env", "import"])),
-            tm.Item(label="Copy env between apps",   value=("cmd", ["env", "copy"])),
-            tm.Item(label="Write .env.template",     value=("cmd", ["env", "template", "--out", ".env.template"])),
-            tm.Item(label="Pull real .env (⚠ plaintext)", value=("cmd", ["env", "pull", "--materialize"])),
+            tm.Item(label="A · Add secret",
+                    value=("add", None),
+                    subtitle="Prompt for KEY + hidden VALUE, save straight to 1Password"),
+            tm.Item(label="I · Import a .env file",
+                    value=("cmd", ["env", "import"]),
+                    subtitle="Push every non-empty line into the vault"),
+            tm.Item(label="P · Pull to .env  (⚠ plaintext on disk)",
+                    value=("cmd", ["env", "pull", "--materialize"]),
+                    subtitle="Materialise the current secrets into ./.env"),
+            tm.Item(label="T · Write .env.template with op:// refs",
+                    value=("cmd", ["env", "template", "--out", ".env.template"]),
+                    subtitle="Keep the shape of the env without secrets"),
             tm.Item(divider=True),
-            tm.Item(label="Switch current env",      value=("cmd", ["env", "use"])),
-            tm.Item(label="List envs in this project", value=("cmd", ["env", "envs"])),
-            tm.Item(label="Run command with secrets", value=("cmd", ["env", "run"])),
+            tm.Item(label="U · Switch current app/env",
+                    value=("cmd", ["env", "use"])),
+            tm.Item(label="List envs in this project",
+                    value=("cmd", ["env", "envs"])),
+            tm.Item(label="Run command with masked env",
+                    value=("cmd", ["env", "run"])),
+            tm.Item(label="Copy secrets between apps",
+                    value=("cmd", ["env", "copy"])),
             tm.Item(divider=True),
-            tm.Item(label="Access items",            value=("cmd", ["access", "list"])),
-            tm.Item(label="Add access credentials",  value=("cmd", ["access", "add"])),
-            tm.Item(label="Share with client",       value=("cmd", ["share", "create"])),
+            tm.Item(label="Access items in vault",
+                    value=("cmd", ["access", "list"])),
+            tm.Item(label="Add access credentials",
+                    value=("cmd", ["access", "add"])),
+            tm.Item(label="Share with client",
+                    value=("cmd", ["share", "create"])),
             tm.Item(divider=True),
-            tm.Item(label="Project init here",       value=("cmd", ["project", "init"])),
-            tm.Item(label="Where am I?",             value=("cmd", ["where"])),
-            tm.Item(label="Status",                  value=("cmd", ["status"])),
-            tm.Item(label="Login",                   value=("cmd", ["login"])),
-            tm.Item(label="Diagnostics (doctor)",    value=("cmd", ["doctor"])),
+            tm.Item(label="Where am I?",       value=("cmd", ["where"])),
+            tm.Item(label="Status",            value=("cmd", ["status"])),
+            tm.Item(label="Sign in / login",   value=("cmd", ["login"])),
+            tm.Item(label="Doctor",            value=("cmd", ["doctor"])),
             tm.Item(divider=True),
-            tm.Item(label="Quit",                    value=("quit", None)),
+            tm.Item(label="Quit", value=("quit", None)),
         ]
 
         menu = tm.Menu(
-            title=title_line, subtitle=subtitle, items=items,
-            footer="↑↓ navigate · Enter select · R refresh · Q quit",
+            title="nn-op  ·  Secrets & envs",
+            subtitle=subtitle,
+            items=items,
+            footer=("↑↓ nav · Enter · A add · P pull · I import · T template · "
+                    "C copy · R refresh · Q quit"),
             message=message,
-            hotkeys={"r": ("refresh", None)},
+            hotkeys={
+                "a": ("add", None),
+                "p": ("cmd", ["env", "pull", "--materialize"]),
+                "i": ("cmd", ["env", "import"]),
+                "t": ("cmd", ["env", "template", "--out", ".env.template"]),
+                "u": ("cmd", ["env", "use"]),
+                "l": ("cmd", ["login"]),
+                "r": ("refresh", None),
+                "c": ("copy", None),
+            },
         )
         message = ""
         choice = menu.run()
@@ -1250,16 +1440,33 @@ def _cmd_interactive_tui(ctx: "ProjectContext") -> int:
             else:
                 revealed.add(payload)
             continue
+        if kind == "add":
+            ok, note = _quick_add_secret(ctx)
+            message = tm.paint(note, tm.GREEN if ok else tm.RED)
+            continue
+        if kind == "copy":
+            item = items[menu.selected]
+            if isinstance(item.value, tuple) and item.value[0] == "toggle":
+                name = item.value[1]
+                match = next(((v, c) for l, v, c in env_rows if l == name), None)
+                if match is not None:
+                    value, _concealed = match
+                    if _copy_to_clipboard(value):
+                        message = tm.paint(f"✓ Copied {name} to clipboard", tm.GREEN)
+                    else:
+                        message = tm.paint("No clipboard tool found (pbcopy / xclip / wl-copy)", tm.RED)
+                    continue
+            message = tm.paint("Highlight a secret first, then press C to copy", tm.DIM)
+            continue
         if kind == "cmd":
             tm.clear_screen()
             print()
-            code = dispatch(list(payload))
+            dispatch(list(payload))
             print()
             try:
-                input("  Press Enter to return to the menu… ")
+                input("  Press Enter to return… ")
             except (EOFError, KeyboardInterrupt):
-                return code
-            ctx = _context()
+                return 0
             continue
 
 
@@ -1351,12 +1558,16 @@ def dispatch(argv: List[str]) -> int:
 
 
 def print_help(_scope: str = "main") -> None:
-    print(f"""nn-op {VERSION}
+    print(f"""nn-op {VERSION}   ·   also available as {BOLD}nnop{RESET}
 
-NovaNode 1Password wrapper — layered on top of the official `op` CLI.
+NovaNode 1Password wrapper — a thin, project-aware layer on top of the
+official `op` CLI. Every secret operation delegates to `op`; NovaNode
+never stores tokens, values, or session state itself.
+
 Project-aware: reads .novanode.yml at (or above) the current directory.
 
 Session:
+  nnop                               Open the interactive menu (fast alias)
   nn-op                              Open the interactive menu
   nn-op login                        Sign in (delegates to `op signin`)
   nn-op logout                       Sign out
