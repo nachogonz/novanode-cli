@@ -144,12 +144,14 @@ def fetch_claude(account):
                 },
             )
             try:
-                with urllib.request.urlopen(request, timeout=6) as response:
+                with urllib.request.urlopen(request, timeout=12) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                     save_cache(cache_name, payload)
             except Exception:
                 payload = None
-    payload = payload or load_cache(cache_name, STALE_CACHE_MAX_AGE)
+    # If the fresh fetch failed, accept a slightly older cached snapshot before
+    # blanking the card — brief API flakes shouldn't erase a working reading.
+    payload = payload or load_cache(cache_name, 300) or load_cache(cache_name, STALE_CACHE_MAX_AGE)
     live = isinstance(payload, dict)
     payload = payload or {}
     five = payload.get("five_hour") or {}
@@ -190,7 +192,7 @@ def codex_rate_limits(account):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.3"}},
+            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.5"}},
         })
         deadline = time.monotonic() + 8
         initialized = False
@@ -307,7 +309,7 @@ def fetch_codex(account):
 
 
 def fetch_usage():
-    accounts = usage_accounts.all_accounts()
+    accounts = usage_accounts.active_accounts()
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(accounts)))) as pool:
         checks = [pool.submit(usage_accounts.connection_status, account) for account in accounts]
         states = {

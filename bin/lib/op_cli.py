@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import op  # noqa: E402
 
 
-VERSION = "1.2.3"
+VERSION = "1.2.5"
 
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
@@ -1100,32 +1100,167 @@ def _interactive_items(ctx: ProjectContext) -> List[Tuple[str, List[str]]]:
 
 
 def cmd_interactive() -> int:
-    ctx = _context()
-    _print_header("Secrets")
-    identity = op.whoami() if op.installed() else None
-    if identity:
-        print(f"  {_color('✓', GREEN)} 1Password authenticated · {identity.get('email', '')}")
-    else:
-        print(f"  {_color('✗', RED)} not signed in · choose 'Login' below")
-    if ctx.root:
-        print(f"  {_color('•', GREEN)} project: {ctx.project or DIM+'(unset)'+RESET}"
-              f"  {DIM}({os.path.relpath(ctx.root, os.getcwd()) or '.'}){RESET}")
-    else:
-        print(f"  {DIM}• no .novanode.yml in this tree{RESET}")
-    print()
-    items = _interactive_items(ctx)
-    for index, (label, _cmd) in enumerate(items, 1):
-        print(f"  {index:>2}. {label}")
-    print()
     try:
-        choice = input("  Select: ").strip()
-    except (EOFError, KeyboardInterrupt):
+        import tuimenu
+    except ImportError:
+        tuimenu = None
+    ctx = _context()
+    if tuimenu is None or not tuimenu.is_tty():
+        _print_header("Secrets")
+        identity = op.whoami() if op.installed() else None
+        if identity:
+            print(f"  {_color('✓', GREEN)} 1Password authenticated · {identity.get('email', '')}")
+        else:
+            print(f"  {_color('✗', RED)} not signed in · choose 'Login' below")
+        if ctx.root:
+            print(f"  {_color('•', GREEN)} project: {ctx.project or DIM+'(unset)'+RESET}"
+                  f"  {DIM}({os.path.relpath(ctx.root, os.getcwd()) or '.'}){RESET}")
+        else:
+            print(f"  {DIM}• no .novanode.yml in this tree{RESET}")
         print()
-        return 0
-    if not choice.isdigit() or not (1 <= int(choice) <= len(items)):
-        _print_error("invalid selection.")
-        return 2
-    return dispatch(items[int(choice) - 1][1])
+        items = _interactive_items(ctx)
+        for index, (label, _cmd) in enumerate(items, 1):
+            print(f"  {index:>2}. {label}")
+        print()
+        try:
+            choice = input("  Select: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not choice.isdigit() or not (1 <= int(choice) <= len(items)):
+            _print_error("invalid selection.")
+            return 2
+        return dispatch(items[int(choice) - 1][1])
+    return _cmd_interactive_tui(ctx)
+
+
+def _op_status_line() -> str:
+    import tuimenu as tm
+    if not op.installed():
+        return tm.paint("1Password CLI not installed", tm.RED)
+    identity = op.whoami()
+    if identity:
+        return tm.paint(f"✓ 1Password · {identity.get('email', '')}", tm.GREEN)
+    return tm.paint("✗ not signed in", tm.RED)
+
+
+def _envs_snapshot(ctx: "ProjectContext"):
+    """Return (title, [(label, value, concealed)]) for the current app/env."""
+    if not ctx.project or not ctx.default_app or not ctx.default_env:
+        return None, []
+    title = f"{ctx.default_app}-{ctx.default_env}"
+    try:
+        payload = op.item_get(title, vault=ctx.project)
+    except op.OpError:
+        return title, None
+    rows = []
+    for field in payload.get("fields", []) or []:
+        label = field.get("label") or field.get("id") or "?"
+        if str(field.get("type", "")).upper() == "CONCEALED":
+            rows.append((label, field.get("value", "") or "", True))
+        else:
+            rows.append((label, field.get("value", "") or "", False))
+    return title, rows
+
+
+def _cmd_interactive_tui(ctx: "ProjectContext") -> int:
+    import tuimenu as tm
+    revealed: set = set()
+    message = ""
+    while True:
+        title_line = "nn-op  ·  Secrets & envs"
+        subtitle = _op_status_line()
+        if ctx.project:
+            where = ctx.project
+            if ctx.default_app and ctx.default_env:
+                where += f" / {ctx.default_app} · {ctx.default_env}"
+            if ctx.root:
+                where += f"  ({os.path.relpath(ctx.root, os.getcwd()) or '.'})"
+            subtitle = subtitle + "   " + tm.paint(where, tm.DIM)
+        else:
+            subtitle = subtitle + "   " + tm.paint("no .novanode.yml in this tree", tm.DIM)
+
+        env_title, env_rows = (None, [])
+        if op.installed() and op.whoami():
+            env_title, env_rows = _envs_snapshot(ctx)
+
+        items = []
+        if env_title and env_rows is not None:
+            items.append(tm.Item(label=env_title, heading=True,
+                                  subtitle=f"{len(env_rows)} field(s) · Enter reveals a secret"))
+            for label, value, concealed in env_rows:
+                display = value if not concealed or label in revealed else "•" * min(24, max(4, len(value) or 8))
+                subline = tm.paint(display, tm.DIM if concealed else "")
+                items.append(tm.Item(
+                    label=f"{label:<26}",
+                    value=("toggle", label),
+                    subtitle=subline,
+                ))
+            items.append(tm.Item(divider=True))
+        elif env_title and env_rows is None:
+            items.append(tm.Item(label=env_title, heading=True,
+                                  subtitle="item not found in vault — Set a secret to create it"))
+            items.append(tm.Item(divider=True))
+        else:
+            items.append(tm.Item(label="No app/env selected", heading=True,
+                                  subtitle="Pick or initialise one below"))
+            items.append(tm.Item(divider=True))
+
+        items += [
+            tm.Item(label="Set / update a secret",   value=("cmd", ["env", "set"])),
+            tm.Item(label="Import a .env file",      value=("cmd", ["env", "import"])),
+            tm.Item(label="Copy env between apps",   value=("cmd", ["env", "copy"])),
+            tm.Item(label="Write .env.template",     value=("cmd", ["env", "template", "--out", ".env.template"])),
+            tm.Item(label="Pull real .env (⚠ plaintext)", value=("cmd", ["env", "pull", "--materialize"])),
+            tm.Item(divider=True),
+            tm.Item(label="Switch current env",      value=("cmd", ["env", "use"])),
+            tm.Item(label="List envs in this project", value=("cmd", ["env", "envs"])),
+            tm.Item(label="Run command with secrets", value=("cmd", ["env", "run"])),
+            tm.Item(divider=True),
+            tm.Item(label="Access items",            value=("cmd", ["access", "list"])),
+            tm.Item(label="Add access credentials",  value=("cmd", ["access", "add"])),
+            tm.Item(label="Share with client",       value=("cmd", ["share", "create"])),
+            tm.Item(divider=True),
+            tm.Item(label="Project init here",       value=("cmd", ["project", "init"])),
+            tm.Item(label="Where am I?",             value=("cmd", ["where"])),
+            tm.Item(label="Status",                  value=("cmd", ["status"])),
+            tm.Item(label="Login",                   value=("cmd", ["login"])),
+            tm.Item(label="Diagnostics (doctor)",    value=("cmd", ["doctor"])),
+            tm.Item(divider=True),
+            tm.Item(label="Quit",                    value=("quit", None)),
+        ]
+
+        menu = tm.Menu(
+            title=title_line, subtitle=subtitle, items=items,
+            footer="↑↓ navigate · Enter select · R refresh · Q quit",
+            message=message,
+            hotkeys={"r": ("refresh", None)},
+        )
+        message = ""
+        choice = menu.run()
+        if choice is None or (isinstance(choice, tuple) and choice[0] == "quit"):
+            return 0
+        kind, payload = choice
+        if kind == "refresh":
+            revealed.clear()
+            continue
+        if kind == "toggle":
+            if payload in revealed:
+                revealed.discard(payload)
+            else:
+                revealed.add(payload)
+            continue
+        if kind == "cmd":
+            tm.clear_screen()
+            print()
+            code = dispatch(list(payload))
+            print()
+            try:
+                input("  Press Enter to return to the menu… ")
+            except (EOFError, KeyboardInterrupt):
+                return code
+            ctx = _context()
+            continue
 
 
 # ── dispatch ──────────────────────────────────────────────────────────

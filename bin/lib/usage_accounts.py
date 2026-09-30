@@ -124,6 +124,32 @@ def all_accounts():
     return load_accounts()
 
 
+def _connected_at_key(account):
+    return account.get("connected_at") or account.get("created_at") or ""
+
+
+def shadowed_claude_ids(accounts=None):
+    """Claude profiles on macOS share one Keychain entry per macOS user.
+    Anything older than the most-recently-connected Claude profile reads the
+    same overwritten token, so we surface only the latest one in usage views.
+    """
+    if sys.platform != "darwin":
+        return set()
+    accounts = accounts if accounts is not None else load_accounts()
+    claude = [row for row in accounts if row["provider"] == "claude"]
+    if len(claude) <= 1:
+        return set()
+    active = max(claude, key=_connected_at_key)
+    return {row["id"] for row in claude if row["id"] != active["id"]}
+
+
+def active_accounts():
+    """Accounts to include in the usage dashboard (skips shadowed profiles)."""
+    accounts = load_accounts()
+    hidden = shadowed_claude_ids(accounts)
+    return [row for row in accounts if row["id"] not in hidden]
+
+
 def profile_home(provider, slug):
     return os.path.join(PROFILES_DIR, provider, slugify(slug))
 

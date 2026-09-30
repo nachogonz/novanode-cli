@@ -126,5 +126,45 @@ class UsageTests(unittest.TestCase):
                 self.assertNotIn(key, env)
 
 
+    def test_tuimenu_menu_navigation_and_hotkeys(self):
+        import tuimenu
+        items = [
+            tuimenu.Item(label="Head", heading=True),
+            tuimenu.Item(label="A", value="a"),
+            tuimenu.Item(divider=True),
+            tuimenu.Item(label="B", value="b"),
+            tuimenu.Item(label="C", value="c", disabled=True),
+        ]
+        menu = tuimenu.Menu(title="t", items=items, hotkeys={"d": "hot"})
+        self.assertEqual(menu.selected, 1)  # skips heading
+        menu._move(+1)
+        self.assertEqual(menu.selected, 3)  # skips divider
+        menu._move(+1)
+        self.assertEqual(menu.selected, 1)  # wraps, skips disabled C
+        menu._move(-1)
+        self.assertEqual(menu.selected, 3)
+
+    def test_active_accounts_dedupes_claude_on_macos(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.environ["NOVANODE_USAGE_ACCOUNTS_PATH"] = os.path.join(root, "accounts.json")
+            os.environ["NOVANODE_USAGE_PROFILES_DIR"] = os.path.join(root, "providers")
+            import importlib
+            importlib.reload(usage_accounts)
+            older = usage_accounts.account_for("claude", "Personal")
+            older["connected_at"] = "2026-09-29T10:00:00+00:00"
+            usage_accounts.remember_account(older)
+            newer = usage_accounts.account_for("claude", "Work")
+            newer["connected_at"] = "2026-09-30T10:00:00+00:00"
+            usage_accounts.remember_account(newer)
+            codex = usage_accounts.account_for("openai", "Nova")
+            codex["connected_at"] = "2026-09-30T09:00:00+00:00"
+            usage_accounts.remember_account(codex)
+            with mock.patch.object(usage_accounts.sys, "platform", "darwin"):
+                shadowed = usage_accounts.shadowed_claude_ids()
+                active = usage_accounts.active_accounts()
+            self.assertEqual(shadowed, {"claude:personal"})
+            self.assertEqual({row["id"] for row in active}, {"claude:work", "openai:nova"})
+
+
 if __name__ == "__main__":
     unittest.main()
