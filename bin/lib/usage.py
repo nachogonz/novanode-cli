@@ -211,7 +211,7 @@ def codex_rate_limits(account):
         return None
     request = (
         '{"jsonrpc":"2.0","id":1,"method":"initialize",'
-        '"params":{"clientInfo":{"name":"nn-usage","version":"1.1.0"}}}\n'
+        '"params":{"clientInfo":{"name":"nn-usage","version":"1.2.0"}}}\n'
         '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}\n'
     )
     try:
