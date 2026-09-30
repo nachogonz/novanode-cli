@@ -1,9 +1,11 @@
 import json
 import os
 import select
+import shutil
 import sqlite3
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -126,6 +128,35 @@ def decorate_row(row, account):
     return row
 
 
+def _fetch_json(url, headers, timeout=12):
+    """GET a JSON URL. Falls back to curl (system trust store) if Python's
+    SSL context has no CA bundle — common with the python.org installer."""
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as error:
+        reason = getattr(error, "reason", None)
+        ssl_broken = reason.__class__.__name__ == "SSLCertVerificationError" if reason else False
+        if not ssl_broken and "CERTIFICATE_VERIFY_FAILED" not in str(error):
+            return None
+    except Exception:
+        return None
+    curl = shutil.which("curl") if callable(getattr(shutil, "which", None)) else None
+    if not curl:
+        return None
+    args = [curl, "-fsSL", "--max-time", str(timeout)]
+    for key, value in headers.items():
+        args += ["-H", f"{key}: {value}"]
+    args.append(url)
+    try:
+        output = subprocess.check_output(args, stderr=subprocess.DEVNULL,
+                                          timeout=timeout + 2)
+        return json.loads(output)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def fetch_claude(account):
     env = usage_accounts.account_env(account)
     version = command_version("claude", env=env)
@@ -134,7 +165,7 @@ def fetch_claude(account):
     if payload is None:
         token = usage_accounts.claude_token(account)
         if token:
-            request = urllib.request.Request(
+            payload = _fetch_json(
                 "https://api.anthropic.com/api/oauth/usage",
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -143,12 +174,8 @@ def fetch_claude(account):
                     "Accept": "application/json",
                 },
             )
-            try:
-                with urllib.request.urlopen(request, timeout=12) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                    save_cache(cache_name, payload)
-            except Exception:
-                payload = None
+            if payload is not None:
+                save_cache(cache_name, payload)
     # If the fresh fetch failed, accept a slightly older cached snapshot before
     # blanking the card — brief API flakes shouldn't erase a working reading.
     payload = payload or load_cache(cache_name, 300) or load_cache(cache_name, STALE_CACHE_MAX_AGE)
@@ -192,7 +219,7 @@ def codex_rate_limits(account):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.5"}},
+            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.6"}},
         })
         deadline = time.monotonic() + 8
         initialized = False

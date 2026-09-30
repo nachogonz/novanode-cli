@@ -126,6 +126,29 @@ class UsageTests(unittest.TestCase):
                 self.assertNotIn(key, env)
 
 
+    def test_fetch_json_falls_back_to_curl_on_ssl_failure(self):
+        import ssl
+        import urllib.error
+        called = {}
+
+        def broken_urlopen(*_, **__):
+            raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED"))
+
+        def fake_curl(args, **__):
+            called["args"] = args
+            return b'{"five_hour": {"utilization": 55}}'
+
+        with mock.patch.object(usage.urllib.request, "urlopen", side_effect=broken_urlopen), \
+             mock.patch.object(usage.shutil, "which", return_value="/usr/bin/curl"), \
+             mock.patch.object(usage.subprocess, "check_output", side_effect=fake_curl):
+            result = usage._fetch_json(
+                "https://api.anthropic.com/api/oauth/usage",
+                headers={"Authorization": "Bearer x", "Accept": "application/json"},
+            )
+        self.assertEqual(result["five_hour"]["utilization"], 55)
+        self.assertIn("--max-time", called["args"])
+        self.assertIn("Authorization: Bearer x", called["args"])
+
     def test_tuimenu_menu_navigation_and_hotkeys(self):
         import tuimenu
         items = [

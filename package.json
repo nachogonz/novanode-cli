@@ -1,6 +1,6 @@
 {
   "name": "@nakdev-npm/novanode",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "NovaNode Asterisk telephony DevKit and Claude/Codex usage TUI",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
