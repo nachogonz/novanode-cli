@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 
@@ -166,17 +167,92 @@ def account_env(account):
     if home:
         env[PROVIDERS[account["provider"]]["home_env"]] = home
     if account["provider"] == "openai" and home:
-        for key in ("OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"):
+        for key in (
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CHATGPT_ACCESS_TOKEN",
+        ):
             env.pop(key, None)
     if account["provider"] == "claude" and home:
         for key in (
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_PROFILE",
+            "ANTHROPIC_FEDERATION_RULE_ID",
+            "ANTHROPIC_ORGANIZATION_ID",
             "CLAUDE_ACCESS_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
         ):
             env.pop(key, None)
     return env
+
+
+def claude_config_home(account):
+    """Return the exact config directory Claude uses for this account."""
+    home = account.get("home")
+    if not home:
+        home = os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    return os.path.abspath(os.path.expanduser(home))
+
+
+def _credential_json(path):
+    try:
+        with open(path) as handle:
+            payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def claude_token(account):
+    """Read the subscription token from Claude's provider-owned store.
+
+    Claude keys macOS Keychain entries by CLAUDE_CONFIG_DIR. Always selecting
+    the account path is important: looking up only the service can return a
+    different profile when several Claude accounts are connected.
+    """
+    if not account.get("home"):
+        token = (
+            os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+            or os.environ.get("CLAUDE_ACCESS_TOKEN")
+        )
+        if token:
+            return token
+
+    home = claude_config_home(account)
+    if sys.platform == "darwin":
+        try:
+            raw = subprocess.check_output(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-a",
+                    home,
+                    "-s",
+                    "Claude Code-credentials",
+                    "-w",
+                ],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            payload = json.loads(raw)
+            token = (
+                payload.get("claudeAiOauth", {}).get("accessToken")
+                if isinstance(payload, dict)
+                else None
+            )
+            if token:
+                return token
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+    payload = _credential_json(os.path.join(home, ".credentials.json"))
+    return payload.get("claudeAiOauth", {}).get("accessToken") or payload.get("accessToken")
 
 
 def prepare_profile(account):
@@ -290,6 +366,12 @@ def connection_status(account):
         except ValueError:
             payload = {}
         connected = bool(payload.get("loggedIn"))
+        if connected and not claude_token(account):
+            return {
+                "connected": False,
+                "detail": "OAuth credential unavailable; reconnect",
+                "version": version,
+            }
         detail = payload.get("authMethod") if connected else "not connected"
         return {"connected": connected, "detail": detail or "connected", "version": version}
     except (OSError, subprocess.SubprocessError):
@@ -343,6 +425,16 @@ def connect_account(account):
         return False, f"{command} login exited with status {result.returncode}"
     status = connection_status(account)
     if not status["connected"]:
+        if provider == "claude" and "credential unavailable" in status.get("detail", ""):
+            if sys.platform == "darwin":
+                return False, (
+                    "Claude signed in, but macOS did not persist a readable OAuth credential. "
+                    "Run `claude doctor`, unlock or repair the login Keychain, then reconnect."
+                )
+            return False, (
+                "Claude signed in, but no OAuth credential was saved in this isolated profile. "
+                "Update Claude Code and reconnect."
+            )
         return False, "login finished but no active session was detected"
     now = datetime.now(timezone.utc).isoformat()
     account["connected_at"] = now

@@ -11,7 +11,7 @@ import usage
 import usage_connect
 
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
 RED = "\033[38;5;196m"
@@ -66,7 +66,20 @@ def card(row, width):
     name = row.get("name") or ("Claude Code" if row["key"].startswith("claude") else "Codex CLI")
     inner = width - 4
     lines = [f"{BOLD}{name}{RESET}", f"{DIM}{row['version']}{RESET}", ""]
+    if row.get("usage_status") == "unavailable":
+        lines.extend([
+            f"{DIM}Usage data temporarily unavailable{RESET}",
+            f"{DIM}Retry `usage`; your other profiles are unaffected.{RESET}",
+            "",
+            "",
+        ])
+        return lines
     for index in (1, 2):
+        if usage.pct_num(row[f"used{index}"]) is None:
+            bar_width = max(10, inner - 14)
+            lines.append(f"{row[f'p{index}']:<8}{DIM}{'·' * bar_width} {'—':>6}{RESET}")
+            lines.append(f"{DIM}{'':8}not included in this plan{RESET}")
+            continue
         bar, label, color = meter(row[f"used{index}"], max(10, inner - 14))
         lines.append(f"{row[f'p{index}']:<8}{bar} {color}{label:>6}{RESET}")
         lines.append(f"{DIM}{'':8}resets {row[f'reset{index}']}{RESET}")
@@ -108,7 +121,13 @@ def dashboard(rows):
     print()
     print(f"  {BOLD}Combined load{RESET}")
     print(f"  {total_bar} {color}{total_label}{RESET}")
-    print(f"  {DIM}{len(rows)} connected profile{'s' if len(rows) != 1 else ''}{RESET}")
+    reporting = sum(
+        1 for row in rows
+        if any(usage.pct_num(row[key]) is not None for key in ("used1", "used2"))
+    )
+    count = len(rows)
+    reporting_label = f" · {reporting} reporting live usage" if reporting != count else ""
+    print(f"  {DIM}{count} connected profile{'s' if count != 1 else ''}{reporting_label}{RESET}")
     print(f"  {DIM}Add another with `usage connect`{RESET}")
     print()
 

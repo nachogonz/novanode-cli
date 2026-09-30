@@ -125,6 +125,10 @@ inside the provider-owned credential stores.
 Connections persist across CLI restarts. The usage dashboard includes only
 profiles that the official provider CLI currently reports as authenticated;
 disconnected profiles and expired sessions are excluded from percentages.
+If a plan does not provide one of the standard windows, the dashboard labels
+that window **not included in this plan** instead of treating the account as
+broken. A temporary fetch failure is also shown separately and never affects
+the other connected profiles.
 Open `usage connect` and choose **Manage sessions** to review the login-time CLI
 version and last-seen time. System accounts can be logged out without deleting
 provider settings or local conversation history. Named-profile removal deletes

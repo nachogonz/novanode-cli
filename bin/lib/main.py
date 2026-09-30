@@ -11,7 +11,7 @@ from doctor import run_doctor  # noqa: E402
 from setup import run_setup  # noqa: E402
 from tui import run_tui  # noqa: E402
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 
 def main(argv=None):

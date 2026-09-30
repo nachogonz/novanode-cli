@@ -129,45 +129,13 @@ def decorate_row(row, account):
     return row
 
 
-def claude_token(account):
-    home = account.get("home")
-    token = os.environ.get("CLAUDE_ACCESS_TOKEN") if not home else None
-    if token:
-        return token
-    if os.uname().sysname == "Darwin":
-        try:
-            args = ["security", "find-generic-password"]
-            if home:
-                args += ["-a", os.path.abspath(os.path.expanduser(home))]
-            args += ["-s", "Claude Code-credentials", "-w"]
-            raw = subprocess.check_output(
-                args,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=3,
-            )
-            return json.loads(raw).get("claudeAiOauth", {}).get("accessToken")
-        except Exception:
-            pass
-    paths = (
-        (os.path.join(home, ".credentials.json"),) if home else
-        ("~/.claude/.credentials.json", "~/.config/claude/credentials.json")
-    )
-    for path in paths:
-        data = load_json(os.path.expanduser(path)) or {}
-        token = data.get("claudeAiOauth", {}).get("accessToken") or data.get("accessToken")
-        if token:
-            return token
-    return None
-
-
 def fetch_claude(account):
     env = usage_accounts.account_env(account)
     version = command_version("claude", env=env)
     cache_name = account_cache_name("claude-usage", account)
     payload = load_cache(cache_name, 30)
     if payload is None:
-        token = claude_token(account)
+        token = usage_accounts.claude_token(account)
         if token:
             request = urllib.request.Request(
                 "https://api.anthropic.com/api/oauth/usage",
@@ -184,16 +152,25 @@ def fetch_claude(account):
                     save_cache(cache_name, payload)
             except Exception:
                 payload = None
-    payload = payload or load_cache(cache_name, STALE_CACHE_MAX_AGE) or {}
+    payload = payload or load_cache(cache_name, STALE_CACHE_MAX_AGE)
+    live = isinstance(payload, dict)
+    payload = payload or {}
     five = payload.get("five_hour") or {}
     week = payload.get("seven_day") or {}
-    return decorate_row(make_row(
+    row = decorate_row(make_row(
         "claude",
         "claude",
         version,
         ("5h", five.get("utilization"), reset_label(five.get("resets_at"))),
         ("Weekly", week.get("utilization"), reset_label(week.get("resets_at"), weekly=True)),
     ), account)
+    row["usage_status"] = "live" if live else "unavailable"
+    return row
+
+
+def _write_json_message(process, message):
+    process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    process.stdin.flush()
 
 
 def codex_rate_limits(account):
@@ -209,15 +186,17 @@ def codex_rate_limits(account):
         )
     except OSError:
         return None
-    request = (
-        '{"jsonrpc":"2.0","id":1,"method":"initialize",'
-        '"params":{"clientInfo":{"name":"nn-usage","version":"1.2.0"}}}\n'
-        '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}\n'
-    )
     try:
-        process.stdin.write(request)
-        process.stdin.flush()
+        # Complete the app-server handshake before asking for account data.
+        # Pipelining this request with initialize is racy across CLI releases.
+        _write_json_message(process, {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.1"}},
+        })
         deadline = time.monotonic() + 8
+        initialized = False
         while time.monotonic() < deadline:
             ready, _, _ = select.select([process.stdout], [], [], 0.25)
             if not ready:
@@ -229,10 +208,34 @@ def codex_rate_limits(account):
                 message = json.loads(line)
             except ValueError:
                 continue
+            if message.get("id") == 1 and not initialized:
+                if message.get("error"):
+                    return None
+                _write_json_message(process, {
+                    "jsonrpc": "2.0",
+                    "method": "initialized",
+                    "params": {},
+                })
+                _write_json_message(process, {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "account/rateLimits/read",
+                    "params": {},
+                })
+                initialized = True
+                continue
             if message.get("id") == 2:
-                return (message.get("result") or {}).get("rateLimits")
+                result = message.get("result") or {}
+                limits = result.get("rateLimits")
+                if limits:
+                    return limits
+                by_id = result.get("rateLimitsByLimitId") or {}
+                return by_id.get("codex") or next(iter(by_id.values()), None)
+    except (BrokenPipeError, OSError):
+        return None
     finally:
-        process.kill()
+        if process.poll() is None:
+            process.kill()
         try:
             process.wait(timeout=1)
         except Exception:
@@ -288,18 +291,22 @@ def normalize_codex_window(window):
 def fetch_codex(account):
     env = usage_accounts.account_env(account)
     version = command_version("codex", env=env)
-    limits = codex_rate_limits(account) or codex_rate_limits_from_cache(account) or {}
+    limits = codex_rate_limits(account) or codex_rate_limits_from_cache(account)
+    live = isinstance(limits, dict)
+    limits = limits or {}
     windows = [normalize_codex_window(limits.get(key)) for key in ("primary", "secondary")]
     windows = [window for window in windows if window]
     short = next((window for window in windows if not window.get("duration") or window["duration"] <= 360), None)
     weekly = next((window for window in windows if window.get("duration") and window["duration"] > 360), None)
-    return decorate_row(make_row(
+    row = decorate_row(make_row(
         "codex",
         "codex",
         version,
         ("5h", short.get("used") if short else None, reset_label(short.get("reset") if short else None)),
         ("Weekly", weekly.get("used") if weekly else None, reset_label(weekly.get("reset") if weekly else None, weekly=True)),
     ), account)
+    row["usage_status"] = "live" if live else "unavailable"
+    return row
 
 
 def fetch_usage():
