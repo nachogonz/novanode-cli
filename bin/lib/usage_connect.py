@@ -101,16 +101,17 @@ def render(clear=False, message=""):
         badge = f"{green}● {connected} connected{reset}" if connected else f"{dim}○ ready to connect{reset}"
         line(f"{bold}{title:<26}{reset}{badge}")
         line(f"{dim}{descriptions[provider]}{reset}")
+        if not provider_accounts:
+            line(f"  {dim}○ no profiles yet — press [{provider[0].upper()}] to connect{reset}")
         for account in provider_accounts:
             current = state[account["id"]]
             dot = f"{green}●{reset}" if current["connected"] else f"{dim}○{reset}"
-            kind = "system" if not account.get("managed") else "profile"
             detail_color = green if current["connected"] else dim
-            label = account["label"][:18]
+            label = account["label"][:22]
             version = current.get("version") or account.get("cli_version")
             version_label = f" · v{version}" if version else ""
             line(
-                f"  {dot} {label:<18} {dim}{kind:<8}{reset} "
+                f"  {dot} {label:<22} "
                 f"{detail_color}{current['detail']}{version_label}{reset}"
             )
         line()
@@ -138,14 +139,10 @@ def compact_date(value):
 
 
 def manage_profiles():
-    accounts = usage_accounts.all_accounts()
-    state = statuses(accounts)
-    accounts = [
-        account for account in accounts
-        if account.get("managed") or state[account["id"]]["connected"]
-    ]
+    accounts = usage_accounts.load_accounts()
     if not accounts:
-        return "No connected or managed sessions"
+        return "No profiles yet — press [O] or [C] to connect one"
+    state = statuses(accounts)
     try:
         usage_accounts.record_statuses(accounts, state)
     except OSError:
@@ -164,7 +161,7 @@ def manage_profiles():
         print("\033[2J\033[H", end="")
     manage_line(f"{bold}NOVANODE{reset}  {orange}// SESSIONS{reset}")
     manage_line(f"{orange}{'─' * width}{reset}")
-    manage_line(f"{dim}Log out system accounts or delete isolated profiles.{reset}")
+    manage_line(f"{dim}Delete an isolated NovaNode profile and its local login.{reset}")
     print()
     for index, account in enumerate(accounts, 1):
         current = state[account["id"]]
@@ -177,16 +174,12 @@ def manage_profiles():
         seen_label = compact_date(account.get("last_seen_at"))
         if seen_version:
             seen_label += f" on v{seen_version}"
-        kind = "isolated profile" if account.get("managed") else "system account"
         manage_line(f"{cyan}[{index}]{reset} {bold}{title} · {account['label']}{reset}")
-        manage_line(f"    {dot} · {kind} · now v{live_version}")
-        if account.get("managed"):
-            manage_line(
-                f"    {dim}login {compact_date(account.get('connected_at'))} with {login_version}{reset}"
-            )
-            manage_line(f"    {dim}last seen {seen_label}{reset}")
-        else:
-            manage_line(f"    {dim}logout keeps provider settings and local history{reset}")
+        manage_line(f"    {dot} · now v{live_version}")
+        manage_line(
+            f"    {dim}login {compact_date(account.get('connected_at'))} with {login_version}{reset}"
+        )
+        manage_line(f"    {dim}last seen {seen_label}{reset}")
         print()
     manage_line(f"{cyan}[B]{reset} Back without changes")
 
@@ -202,18 +195,6 @@ def manage_profiles():
         return "Error: choose a session number or B"
 
     title = usage_accounts.PROVIDERS[account["provider"]]["title"]
-    if not account.get("managed"):
-        print(f"\n  {red}{bold}Log out {title} · Default?{reset}")
-        print(f"  {dim}Credentials are cleared; local settings and conversation history remain.{reset}")
-        try:
-            confirmed = input("  Type logout to confirm: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return "No sessions changed"
-        if confirmed != "logout":
-            return "No sessions changed"
-        ok, detail = usage_accounts.logout_default_account(account["id"])
-        return detail if ok else f"Error: {detail}"
-
     print(f"\n  {red}{bold}Remove {title} · {account['label']}?{reset}")
     print(f"  {dim}This signs out and deletes only this NovaNode-managed profile directory.{reset}")
     try:

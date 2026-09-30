@@ -54,17 +54,19 @@ class UsageTests(unittest.TestCase):
         self.assertLess(final.index('"method":"initialized"'), final.index('"method":"account/rateLimits/read"'))
         self.assertTrue(process.killed)
 
-    def test_claude_keychain_lookup_is_scoped_for_default_profile(self):
-        account = {"provider": "claude", "home": None, "managed": False}
-        credential = json.dumps({"claudeAiOauth": {"accessToken": "secret"}})
-        with mock.patch.dict(os.environ, {}, clear=True), \
-             mock.patch.object(usage_accounts.sys, "platform", "darwin"), \
-             mock.patch.object(usage_accounts.subprocess, "check_output", return_value=credential) as call:
-            token = usage_accounts.claude_token(account)
-
-        self.assertEqual(token, "secret")
-        args = call.call_args.args[0]
-        self.assertEqual(args[args.index("-a") + 1], os.path.expanduser("~/.claude"))
+    def test_only_managed_profiles_are_considered(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.environ["NOVANODE_USAGE_ACCOUNTS_PATH"] = os.path.join(root, "accounts.json")
+            os.environ["NOVANODE_USAGE_PROFILES_DIR"] = os.path.join(root, "providers")
+            import importlib
+            importlib.reload(usage_accounts)
+            self.assertEqual(usage_accounts.all_accounts(), [])
+            account = usage_accounts.account_for("openai", "Personal")
+            usage_accounts.remember_account(account)
+            accounts = usage_accounts.all_accounts()
+            self.assertEqual(len(accounts), 1)
+            self.assertTrue(accounts[0]["managed"])
+            self.assertEqual(accounts[0]["provider"], "openai")
 
     def test_claude_keychain_lookup_is_scoped_for_named_profile(self):
         with tempfile.TemporaryDirectory() as home:

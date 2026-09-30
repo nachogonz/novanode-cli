@@ -110,22 +110,19 @@ def load_cache(name, max_age=None):
 
 
 def account_cache_name(prefix, account):
-    if account and not account.get("managed"):
-        return prefix
-    account_id = (account or {}).get("id", "default")
+    account_id = (account or {}).get("id", "profile")
     safe_id = "".join(char if char.isalnum() or char in "-_" else "-" for char in account_id)
     return f"{prefix}-{safe_id}"
 
 
 def decorate_row(row, account):
     provider = account["provider"]
-    default = not account.get("managed")
     base_key = "codex" if provider == "openai" else "claude"
     base_name = "Codex CLI" if provider == "openai" else "Claude Code"
-    row["key"] = base_key if default else f"{base_key}:{account['slug']}"
+    row["key"] = f"{base_key}:{account['slug']}"
     row["provider"] = provider
     row["profile"] = account["label"]
-    row["name"] = base_name if default else f"{base_name} · {account['label']}"
+    row["name"] = f"{base_name} · {account['label']}"
     return row
 
 
@@ -193,7 +190,7 @@ def codex_rate_limits(account):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.1"}},
+            "params": {"clientInfo": {"name": "nn-usage", "version": "1.2.2"}},
         })
         deadline = time.monotonic() + 8
         initialized = False

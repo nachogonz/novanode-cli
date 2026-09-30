@@ -43,13 +43,6 @@ def slugify(value):
     return slug[:48] or "personal"
 
 
-def default_accounts():
-    return [
-        {"id": "openai:default", "provider": "openai", "label": "Default", "home": None, "managed": False},
-        {"id": "claude:default", "provider": "claude", "label": "Default", "home": None, "managed": False},
-    ]
-
-
 def load_accounts(path=None):
     path = path or ACCOUNTS_PATH
     try:
@@ -127,7 +120,7 @@ def save_accounts(accounts, path=None):
 
 
 def all_accounts():
-    return default_accounts() + load_accounts()
+    return load_accounts()
 
 
 def profile_home(provider, slug):
@@ -519,37 +512,3 @@ def remove_account(account_id):
     except OSError as error:
         return False, f"could not remove the local profile: {error}"
     return True, f"Removed {PROVIDERS[provider]['title']} · {account['label']}"
-
-
-def logout_default_account(account_id):
-    """Log out a provider's system profile without deleting its config/history."""
-    account = next((row for row in default_accounts() if row["id"] == account_id), None)
-    if not account:
-        return False, "system session was not found"
-    provider = account["provider"]
-    command = PROVIDERS[provider]["command"]
-    if not shutil.which(command):
-        return False, f"{command} is not installed"
-    logout = [command, "logout"] if provider == "openai" else [command, "auth", "logout"]
-    try:
-        subprocess.run(
-            logout,
-            env=account_env(account),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=12,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        return False, f"logout failed: {error}"
-
-    if provider == "claude":
-        try:
-            os.unlink(os.path.join(CACHE_DIR, "claude-usage.json"))
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            return False, f"logged out, but could not clear the usage cache: {error}"
-    status = connection_status(account)
-    if status["connected"]:
-        return False, "provider still reports an active session"
-    return True, f"Logged out {PROVIDERS[provider]['title']} · Default"

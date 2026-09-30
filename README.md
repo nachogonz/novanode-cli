@@ -116,9 +116,11 @@ usage connect manage
 usage connect --status
 ```
 
-Named accounts are isolated with their own `CODEX_HOME` or
-`CLAUDE_CONFIG_DIR`, so personal and work accounts can stay connected at the
-same time. NovaNode stores only profile metadata in
+Every profile is isolated with its own `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, so
+personal and work accounts can stay connected at the same time. NovaNode only
+tracks the accounts you register through `usage connect`; ambient shell logins
+to `codex` or `claude` outside those profiles are ignored so they never leak
+into the dashboard. NovaNode stores only profile metadata in
 `~/.config/novanode/usage-accounts.json`. Passwords and OAuth credentials stay
 inside the provider-owned credential stores.
 
@@ -129,12 +131,11 @@ If a plan does not provide one of the standard windows, the dashboard labels
 that window **not included in this plan** instead of treating the account as
 broken. A temporary fetch failure is also shown separately and never affects
 the other connected profiles.
-Open `usage connect` and choose **Manage sessions** to review the login-time CLI
-version and last-seen time. System accounts can be logged out without deleting
-provider settings or local conversation history. Named-profile removal deletes
-only that isolated NovaNode-managed provider directory and its cached usage
-snapshot. Short-lived usage snapshots are discarded after two minutes, so old
-sessions cannot keep contributing stale percentages.
+Open `usage connect` and choose **Sessions** to review the login-time CLI
+version and last-seen time. Removing a profile deletes only that isolated
+NovaNode-managed provider directory and its cached usage snapshot. Short-lived
+usage snapshots are discarded after two minutes, so old sessions cannot keep
+contributing stale percentages.
 
 ## Requirements
 
