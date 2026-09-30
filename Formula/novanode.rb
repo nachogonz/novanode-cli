@@ -16,6 +16,11 @@ class Novanode < Formula
       exec "#{libexec}/bin/nn-usage" "$@"
     SH
 
+    (bin/"usage").write <<~SH
+      #!/bin/bash
+      exec "#{bin}/nn-usage" "$@"
+    SH
+
     (bin/"novanode").write <<~SH
       #!/bin/bash
       exec "#{libexec}/bin/novanode" "$@"
@@ -25,6 +30,7 @@ class Novanode < Formula
   test do
     assert_equal version.to_s, shell_output("#{bin}/novanode --version").strip
     assert_equal version.to_s, shell_output("#{bin}/nn-usage --version").strip
+    assert_equal version.to_s, shell_output("#{bin}/usage --version").strip
     assert_match "Usage:", shell_output("#{bin}/nn-usage --help")
   end
 end

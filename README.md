@@ -87,12 +87,50 @@ The baresip phone adapter expects a running baresip process on Fedora with `ctrl
 ## Usage Dashboard
 
 ```sh
+./bin/usage
+./bin/usage connect
 ./bin/nn-usage
 ./bin/nn-usage --summary-tsv
 ./bin/nn-usage --json
 ```
 
+`usage` is the short alias for `nn-usage`; both commands have the same options.
+
 Only Claude Code and Codex CLI are queried.
+
+### Connect Providers
+
+Open the provider connection hub:
+
+```sh
+usage connect
+```
+
+Or start a named browser login directly:
+
+```sh
+usage connect openai personal
+usage connect openai work
+usage connect claude personal
+usage connect manage
+usage connect --status
+```
+
+Named accounts are isolated with their own `CODEX_HOME` or
+`CLAUDE_CONFIG_DIR`, so personal and work accounts can stay connected at the
+same time. NovaNode stores only profile metadata in
+`~/.config/novanode/usage-accounts.json`. Passwords and OAuth credentials stay
+inside the provider-owned credential stores.
+
+Connections persist across CLI restarts. The usage dashboard includes only
+profiles that the official provider CLI currently reports as authenticated;
+disconnected profiles and expired sessions are excluded from percentages.
+Open `usage connect` and choose **Manage sessions** to review the login-time CLI
+version and last-seen time. System accounts can be logged out without deleting
+provider settings or local conversation history. Named-profile removal deletes
+only that isolated NovaNode-managed provider directory and its cached usage
+snapshot. Short-lived usage snapshots are discarded after two minutes, so old
+sessions cannot keep contributing stale percentages.
 
 ## Requirements
 
@@ -107,7 +145,7 @@ Only Claude Code and Codex CLI are queried.
 npm install -g @nakdev-npm/novanode
 ```
 
-Homebrew releases also install `nn`, `nn-pbx`, `nn-usage`, and the `novanode` compatibility alias.
+Homebrew releases also install `nn`, `nn-pbx`, `nn-usage`, `usage`, and the `novanode` compatibility alias.
 
 ## License
 

@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import usage
+import usage_connect
 
 
 VERSION = "1.1.0"
@@ -25,11 +26,20 @@ def help_text():
 Clean AI plan-usage dashboard for Claude Code and Codex CLI.
 
 Usage:
+  usage
+  usage connect
+  usage connect manage
+  usage connect openai [profile-name]
+  usage connect claude [profile-name]
+  usage --summary-tsv
+  usage --json
   nn-usage
   nn-usage --summary-tsv
   nn-usage --json
   nn-usage --help
   nn-usage --version
+
+`usage` is the fast alias; `nn-usage` remains supported.
 """)
 
 
@@ -53,7 +63,7 @@ def visible(text):
 
 
 def card(row, width):
-    name = "Claude Code" if row["key"] == "claude" else "Codex CLI"
+    name = row.get("name") or ("Claude Code" if row["key"].startswith("claude") else "Codex CLI")
     inner = width - 4
     lines = [f"{BOLD}{name}{RESET}", f"{DIM}{row['version']}{RESET}", ""]
     for index in (1, 2):
@@ -65,21 +75,32 @@ def card(row, width):
 
 def dashboard(rows):
     terminal = shutil.get_terminal_size((100, 28)).columns
-    width = max(76, min(118, terminal - 2))
+    width = max(48, min(118, terminal - 2))
     gap = 3
-    card_width = (width - gap) // 2
+    columns = 2 if width >= 84 and len(rows) > 1 else 1
+    card_width = (width - gap * (columns - 1)) // columns
     cards = [card(row, card_width) for row in rows]
-    height = max(len(item) for item in cards)
     print()
     print(f"  {BOLD}NOVANODE{RESET}  {DIM}usage control center · live plan windows{RESET}")
     print(f"  {ORANGE}{'─' * width}{RESET}")
     print()
-    for line_index in range(height):
-        rendered = []
-        for item in cards:
-            line = item[line_index] if line_index < len(item) else ""
-            rendered.append(line + " " * max(0, card_width - visible(line)))
-        print("  " + (" " * gap).join(rendered))
+    if not rows:
+        print(f"  {BOLD}No connected providers{RESET}")
+        print(f"  {DIM}Run `usage connect` to add OpenAI or Claude with browser sign-in.{RESET}")
+        print(f"  {DIM}Disconnected and removed sessions never appear in usage totals.{RESET}")
+        print()
+        return
+    for offset in range(0, len(cards), columns):
+        group = cards[offset:offset + columns]
+        height = max(len(item) for item in group)
+        for line_index in range(height):
+            rendered = []
+            for item in group:
+                line = item[line_index] if line_index < len(item) else ""
+                rendered.append(line + " " * max(0, card_width - visible(line)))
+            print("  " + (" " * gap).join(rendered))
+        if offset + columns < len(cards):
+            print()
     values = [usage.pct_num(row[key]) for row in rows for key in ("used1", "used2")]
     values = [value for value in values if value is not None]
     average = sum(values) / len(values) if values else None
@@ -87,7 +108,8 @@ def dashboard(rows):
     print()
     print(f"  {BOLD}Combined load{RESET}")
     print(f"  {total_bar} {color}{total_label}{RESET}")
-    print(f"  {DIM}Claude Code + Codex CLI{RESET}")
+    print(f"  {DIM}{len(rows)} connected profile{'s' if len(rows) != 1 else ''}{RESET}")
+    print(f"  {DIM}Add another with `usage connect`{RESET}")
     print()
 
 
@@ -99,6 +121,8 @@ def main(argv=None):
     if argv and argv[0] in ("-v", "--version"):
         print(VERSION)
         return 0
+    if argv and argv[0] == "connect":
+        return usage_connect.main(argv[1:])
     if argv and argv[0] not in ("--summary-tsv", "--json"):
         print(f"nn-usage: unknown option {argv[0]}", file=sys.stderr)
         return 2

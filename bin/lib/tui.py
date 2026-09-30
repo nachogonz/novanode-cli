@@ -404,38 +404,46 @@ class App:
 
     # ── usage tab ────────────────────────────────────────────────
     def render_usage(self, y0, height, width):
-        std = self.stdscr
-        draw_box(std, y0, 0, min(height, 6), width - 2, " USAGE ")
-        self._draw_usage_cards(y0 + 1, width - 4)
-        self._draw_totals(y0, height)
+        cards_h = self._draw_usage_cards(y0, width - 2, max(1, height - 3))
+        self._draw_totals(y0 + cards_h, height - cards_h)
 
     def _draw_cell(self, y, x, width):
         std = self.stdscr
         draw_box(std, y, x, 5, width, "")
 
-    def _draw_usage_cards(self, y0, width):
+    def _draw_usage_cards(self, y0, width, height):
         std = self.stdscr
         rows = self.usage_rows
         n_providers = len(rows)
         margin = 2
         gap = 2
         if n_providers == 0:
-            card_w = width - 2 * margin
-        else:
-            card_w = (width - 2 * margin - gap * (n_providers - 1)) // n_providers
-        card_w = max(24, min(card_w, 48))
-        x = margin
-        for idx, p in enumerate(rows):
-            self._render_usage_card(y0, x, card_w, p)
-            x += card_w + gap
+            draw_box(std, y0, margin, min(5, height), width - 2 * margin, " USAGE ")
+            std.addnstr(y0 + 1, margin, " No connected providers — run `usage connect` to add one.", width, self.cp(6))
+            return min(6, height)
 
-        extras_x = margin + n_providers * (card_w + gap)
-        if n_providers == 0:
-            std.addnstr(y0 + 1, margin, " No usage data — run `nn-usage` once to populate.", width, self.cp(6))
+        columns = 2 if width >= 72 and n_providers > 1 else 1
+        card_w = (width - 2 * margin - gap * (columns - 1)) // columns
+        card_w = max(24, min(card_w, 52))
+        max_grid_rows = max(1, height // 9)
+        capacity = columns * max_grid_rows
+        shown = rows[:capacity]
+        for idx, provider in enumerate(shown):
+            grid_row, column = divmod(idx, columns)
+            x = margin + column * (card_w + gap)
+            y = y0 + grid_row * 9
+            self._render_usage_card(y, x, card_w, provider)
+        used_rows = (len(shown) + columns - 1) // columns
+        used_height = max(9, used_rows * 9)
+        hidden = len(rows) - len(shown)
+        if hidden and used_height < height:
+            std.addnstr(y0 + used_height, margin, f"+ {hidden} more profile(s) · open `usage` for the full view", width, self.cp(6))
+            used_height += 1
+        return min(height, used_height)
 
     def _render_usage_card(self, y0, x, w, p):
         std = self.stdscr
-        name = {"claude": "Claude Code", "codex": "Codex CLI"}.get(p["key"], p["key"])
+        name = p.get("name") or {"claude": "Claude Code", "codex": "Codex CLI"}.get(p["key"], p["key"])
         draw_box(std, y0, x, 8, w, name)
         ver = p["version"] or "not detected"
         std.addnstr(y0 + 1, x + 2, f"v{ver}", w - 4, self.cp(6))
@@ -454,7 +462,7 @@ class App:
 
     def _draw_totals(self, y0, height):
         std = self.stdscr
-        if not self.usage_rows:
+        if not self.usage_rows or height < 3:
             return
         pcts = []
         for p in self.usage_rows:
@@ -466,10 +474,12 @@ class App:
             return
         avg = sum(pcts) / len(pcts)
         left = 100 - avg
-        y = y0 + 9
-        draw_box(std, y, 2, 2, min(60, self.stdscr.getmaxyx()[1] - 6), " TOTAL ")
-        bar = "".join(c for _, c in progress_bar(40, avg, ORANGE if avg < 100 else RED))
-        std.addnstr(y + 1, 4, f"{bar}  {avg:.0f}% avg · {left:.0f}% left", self.stdscr.getmaxyx()[1] - 6, self.cp(1))
+        box_w = min(70, self.stdscr.getmaxyx()[1] - 6)
+        draw_box(std, y0, 2, 3, box_w, " COMBINED LOAD ")
+        bar_w = max(10, min(40, box_w - 24))
+        color = RED if avg >= 90 else ORANGE if avg >= 70 else GREEN
+        bar = "".join(c for _, c in progress_bar(bar_w, avg, color))
+        std.addnstr(y0 + 1, 4, f"{bar}  {avg:.0f}% avg · {left:.0f}% left", box_w - 4, self.cp(color))
 
     # ── pbx tab ──────────────────────────────────────────────────
     def render_pbx(self, y0, height, width):

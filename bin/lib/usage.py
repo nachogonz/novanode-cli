@@ -8,13 +8,20 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import usage_accounts
 
-CACHE_DIR = os.path.expanduser("~/.cache/novanode")
+
+CACHE_DIR = os.path.expanduser(
+    os.environ.get("NOVANODE_USAGE_CACHE_DIR", "~/.cache/novanode")
+)
+STALE_CACHE_MAX_AGE = 120
 
 
-def command_version(command):
+def command_version(command, env=None):
     try:
-        output = subprocess.check_output([command, "--version"], stderr=subprocess.DEVNULL, text=True, timeout=3)
+        output = subprocess.check_output(
+            [command, "--version"], stderr=subprocess.DEVNULL, text=True, timeout=3, env=env
+        )
         return output.strip().splitlines()[0].replace(" (Claude Code)", "").replace("codex-cli ", "")
     except Exception:
         return "n/a"
@@ -93,19 +100,48 @@ def load_cache(name, max_age=None):
     data = load_json(os.path.join(CACHE_DIR, name + ".json"))
     if not data:
         return None
-    if max_age is not None and time.time() - data.get("fetched_at", 0) > max_age:
-        return None
+    if max_age is not None:
+        try:
+            if time.time() - float(data.get("fetched_at", 0)) > max_age:
+                return None
+        except (TypeError, ValueError):
+            return None
     return data.get("payload")
 
 
-def claude_token():
-    token = os.environ.get("CLAUDE_ACCESS_TOKEN")
+def account_cache_name(prefix, account):
+    if account and not account.get("managed"):
+        return prefix
+    account_id = (account or {}).get("id", "default")
+    safe_id = "".join(char if char.isalnum() or char in "-_" else "-" for char in account_id)
+    return f"{prefix}-{safe_id}"
+
+
+def decorate_row(row, account):
+    provider = account["provider"]
+    default = not account.get("managed")
+    base_key = "codex" if provider == "openai" else "claude"
+    base_name = "Codex CLI" if provider == "openai" else "Claude Code"
+    row["key"] = base_key if default else f"{base_key}:{account['slug']}"
+    row["provider"] = provider
+    row["profile"] = account["label"]
+    row["name"] = base_name if default else f"{base_name} · {account['label']}"
+    return row
+
+
+def claude_token(account):
+    home = account.get("home")
+    token = os.environ.get("CLAUDE_ACCESS_TOKEN") if not home else None
     if token:
         return token
     if os.uname().sysname == "Darwin":
         try:
+            args = ["security", "find-generic-password"]
+            if home:
+                args += ["-a", os.path.abspath(os.path.expanduser(home))]
+            args += ["-s", "Claude Code-credentials", "-w"]
             raw = subprocess.check_output(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                args,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=3,
@@ -113,7 +149,11 @@ def claude_token():
             return json.loads(raw).get("claudeAiOauth", {}).get("accessToken")
         except Exception:
             pass
-    for path in ("~/.claude/.credentials.json", "~/.config/claude/credentials.json"):
+    paths = (
+        (os.path.join(home, ".credentials.json"),) if home else
+        ("~/.claude/.credentials.json", "~/.config/claude/credentials.json")
+    )
+    for path in paths:
         data = load_json(os.path.expanduser(path)) or {}
         token = data.get("claudeAiOauth", {}).get("accessToken") or data.get("accessToken")
         if token:
@@ -121,11 +161,13 @@ def claude_token():
     return None
 
 
-def fetch_claude():
-    version = command_version("claude")
-    payload = load_cache("claude-usage", 30)
+def fetch_claude(account):
+    env = usage_accounts.account_env(account)
+    version = command_version("claude", env=env)
+    cache_name = account_cache_name("claude-usage", account)
+    payload = load_cache(cache_name, 30)
     if payload is None:
-        token = claude_token()
+        token = claude_token(account)
         if token:
             request = urllib.request.Request(
                 "https://api.anthropic.com/api/oauth/usage",
@@ -139,22 +181,22 @@ def fetch_claude():
             try:
                 with urllib.request.urlopen(request, timeout=6) as response:
                     payload = json.loads(response.read().decode("utf-8"))
-                    save_cache("claude-usage", payload)
+                    save_cache(cache_name, payload)
             except Exception:
                 payload = None
-    payload = payload or load_cache("claude-usage") or {}
+    payload = payload or load_cache(cache_name, STALE_CACHE_MAX_AGE) or {}
     five = payload.get("five_hour") or {}
     week = payload.get("seven_day") or {}
-    return make_row(
+    return decorate_row(make_row(
         "claude",
         "claude",
         version,
         ("5h", five.get("utilization"), reset_label(five.get("resets_at"))),
         ("Weekly", week.get("utilization"), reset_label(week.get("resets_at"), weekly=True)),
-    )
+    ), account)
 
 
-def codex_rate_limits():
+def codex_rate_limits(account):
     try:
         process = subprocess.Popen(
             ["codex", "app-server", "--stdio"],
@@ -163,6 +205,7 @@ def codex_rate_limits():
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            env=usage_accounts.account_env(account),
         )
     except OSError:
         return None
@@ -197,24 +240,39 @@ def codex_rate_limits():
     return None
 
 
-def codex_rate_limits_from_cache():
-    path = os.path.expanduser("~/.codex/logs_2.sqlite")
+def codex_rate_limits_from_cache(account):
+    home = account.get("home") or os.environ.get("CODEX_HOME") or "~/.codex"
+    path = os.path.join(os.path.expanduser(home), "logs_2.sqlite")
     if not os.path.isfile(path):
         return None
     try:
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         row = connection.execute(
-            "SELECT feedback_log_body FROM logs "
+            "SELECT ts, feedback_log_body FROM logs "
             "WHERE feedback_log_body LIKE '%\"type\":\"codex.rate_limits\"%' "
             "ORDER BY ts DESC LIMIT 1"
         ).fetchone()
         connection.close()
-        if not row:
+        if not row or not timestamp_is_recent(row[0], STALE_CACHE_MAX_AGE):
             return None
-        start = row[0].find("{")
-        return json.loads(row[0][start:]).get("rate_limits") if start >= 0 else None
+        start = row[1].find("{")
+        return json.loads(row[1][start:]).get("rate_limits") if start >= 0 else None
     except Exception:
         return None
+
+
+def timestamp_is_recent(value, max_age):
+    try:
+        stamp = float(value)
+        while stamp > 100_000_000_000:
+            stamp /= 1000
+    except (TypeError, ValueError):
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return False
+    age = time.time() - stamp
+    return -300 <= age <= max_age
 
 
 def normalize_codex_window(window):
@@ -227,27 +285,46 @@ def normalize_codex_window(window):
     }
 
 
-def fetch_codex():
-    version = command_version("codex")
-    limits = codex_rate_limits() or codex_rate_limits_from_cache() or {}
+def fetch_codex(account):
+    env = usage_accounts.account_env(account)
+    version = command_version("codex", env=env)
+    limits = codex_rate_limits(account) or codex_rate_limits_from_cache(account) or {}
     windows = [normalize_codex_window(limits.get(key)) for key in ("primary", "secondary")]
     windows = [window for window in windows if window]
     short = next((window for window in windows if not window.get("duration") or window["duration"] <= 360), None)
     weekly = next((window for window in windows if window.get("duration") and window["duration"] > 360), None)
-    return make_row(
+    return decorate_row(make_row(
         "codex",
         "codex",
         version,
         ("5h", short.get("used") if short else None, reset_label(short.get("reset") if short else None)),
         ("Weekly", weekly.get("used") if weekly else None, reset_label(weekly.get("reset") if weekly else None, weekly=True)),
-    )
+    ), account)
 
 
 def fetch_usage():
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        claude = pool.submit(fetch_claude)
-        codex = pool.submit(fetch_codex)
-        return [claude.result(), codex.result()]
+    accounts = usage_accounts.all_accounts()
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(accounts)))) as pool:
+        checks = [pool.submit(usage_accounts.connection_status, account) for account in accounts]
+        states = {
+            account["id"]: check.result() for account, check in zip(accounts, checks)
+        }
+    try:
+        usage_accounts.record_statuses(accounts, states)
+    except OSError:
+        pass
+    accounts = [
+        account for account in accounts
+        if states[account["id"]].get("connected")
+    ]
+    if not accounts:
+        return []
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(accounts)))) as pool:
+        futures = []
+        for account in accounts:
+            fetcher = fetch_codex if account["provider"] == "openai" else fetch_claude
+            futures.append(pool.submit(fetcher, account))
+        return [future.result() for future in futures]
 
 
 def pct_num(value):
