@@ -23,20 +23,18 @@ def average(rows, key):
     return sum(values) / len(values) if values else None
 
 
-def meter(value, width=36):
-    """Render a two-row-tall bar with a filled portion plus percent label.
-
-    Uses ▰/▱ block pairs on two stacked rows for a thicker, more professional
-    look than the single-row ━/─ meter the legacy dashboard used.
-    """
+def meter(value, width=44):
+    """Solid single-row meter. Both filled and track use the full block
+    character so the bar renders as one continuous rectangle with a crisp
+    color boundary at the fill point — no half-blocks, no stippled gaps."""
     number = usage.pct_num(value)
     if number is None:
         return None, "—"
     filled = max(0, min(width, round(number / 100 * width)))
     color = usage_color_for_percent(number)
     bar = Text()
-    bar.append("▰" * filled, style=color)
-    bar.append("▱" * (width - filled), style=SEMANTIC.usage_track)
+    bar.append("█" * filled, style=color)
+    bar.append("█" * (width - filled), style="#1A1F1B")
     return bar, f"{number:g}%"
 
 
@@ -78,7 +76,7 @@ class ProviderCard(Vertical):
             header_line.append(f"{period:<8}", style=SEMANTIC.text_muted)
             if number is None:
                 header_line.append("not in plan", style=SEMANTIC.text_disabled)
-                bar = Text("▱" * 36, style=SEMANTIC.text_disabled)
+                bar = Text("█" * 44, style="#1A1F1B")
                 reset_text = "—"
             else:
                 color = usage_color_for_percent(number)
