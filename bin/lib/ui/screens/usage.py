@@ -67,26 +67,30 @@ class ProviderCard(Vertical):
             yield Static(Text("× Usage data temporarily unavailable", style=SEMANTIC.warning))
             yield Static("Retry refresh; other profiles are unaffected.")
             return
-        rendered_any = False
+        # Always render both window rows at the same height so sibling cards
+        # in a row stay flush. Windows the plan doesn't report render in a
+        # muted "not in plan" state instead of collapsing the row.
         for index in (1, 2):
             value = row.get(f"used{index}")
-            if usage.pct_num(value) is None:
-                continue  # Hide windows this plan doesn't report.
-            rendered_any = True
-            bar, label = meter(value)
-            period = row.get(f"p{index}", "") or ""
-            color = usage_color_for_percent(usage.pct_num(value) or 0)
+            number = usage.pct_num(value)
+            period = (row.get(f"p{index}") or ("5H" if index == 1 else "WEEKLY")).upper()
             header_line = Text()
-            header_line.append(f"{period.upper():<8}", style=SEMANTIC.text_muted)
-            header_line.append(label, style=color)
+            header_line.append(f"{period:<8}", style=SEMANTIC.text_muted)
+            if number is None:
+                header_line.append("not in plan", style=SEMANTIC.text_disabled)
+                bar = Text("▱" * 36, style=SEMANTIC.text_disabled)
+                reset_text = "—"
+            else:
+                color = usage_color_for_percent(number)
+                header_line.append(f"{number:g}%", style=color)
+                bar, _ = meter(value)
+                reset_text = row.get(f"reset{index}", "n/a")
             yield Static(header_line, classes="meter-row")
             yield Static(bar)
-            reset = row.get(f"reset{index}", "n/a")
-            yield Static(Text(f"        resets {reset}", style=SEMANTIC.text_muted),
+            yield Static(Text(f"        resets {reset_text}",
+                              style=SEMANTIC.text_disabled if number is None
+                              else SEMANTIC.text_muted),
                          classes="meter-reset")
-        if not rendered_any:
-            yield Static(Text("No active usage windows reported.",
-                              style=SEMANTIC.text_muted))
 
 
 class UsageScreen(Screen):
