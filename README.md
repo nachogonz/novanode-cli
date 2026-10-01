@@ -1,6 +1,6 @@
 # NovaNode Telephony DevKit
 
-See [PARTNER_MANUAL.md](./PARTNER_MANUAL.md) for the complete lab setup, operation, troubleshooting, and npm release guide.
+See [PARTNER_MANUAL.md](./PARTNER_MANUAL.md) for the complete lab setup, operation, troubleshooting, and npm release guide. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 `nn` is a terminal development station for the NovaNode Asterisk lab. It combines PBX status, a baresip controller, calls, trunks, AMI events, diagnostics, automated test calls, and Claude/Codex usage in one TUI.
 

@@ -1,6 +1,6 @@
 {
   "name": "@nakdev-npm/novanode",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "NovaNode Asterisk telephony DevKit and Claude/Codex usage TUI",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
@@ -37,6 +37,7 @@
   },
   "files": [
     "bin",
+    "CHANGELOG.md",
     "README.md",
     "PARTNER_MANUAL.md",
     "WORKFLOWS.md",
