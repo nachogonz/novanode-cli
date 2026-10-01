@@ -14,6 +14,9 @@ sys.path.insert(0, os.path.join(repo_root, "lib"))
 from ui.app_hub import NovaHubApp
 
 if __name__ == "__main__":
+    if "--dev" in sys.argv or os.environ.get("NNOP_DEV"):
+        import op_dev
+        op_dev.install()
     app = NovaHubApp()
     app._initial_target = "secrets"
     app.run()

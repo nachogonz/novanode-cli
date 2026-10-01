@@ -211,6 +211,60 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.screen, UsageScreen)
                 await pilot.press("q")
 
+    async def test_dev_mode_seeds_workspace_and_shows_banner(self):
+        import importlib
+        import shutil
+        import tempfile
+        import os as _os
+
+        tmp = tempfile.mkdtemp(prefix="nnop-dev-test-")
+        prev_home = _os.environ.get("NNOP_DEV_HOME")
+        prev_dev = _os.environ.get("NNOP_DEV")
+        prev_cwd = _os.getcwd()
+        try:
+            _os.environ["NNOP_DEV_HOME"] = tmp
+            _os.environ.pop("NNOP_DEV", None)
+            import op_dev
+            importlib.reload(op_dev)
+            # Reload op so the install() patch acts on a fresh module copy.
+            import op as real_op
+            importlib.reload(real_op)
+            op_dev.install()
+            self.assertTrue(real_op.whoami())
+            self.assertIn("mock", (real_op.version() or "").lower())
+            self.assertTrue(_os.path.isfile(_os.path.join(tmp, "workspace",
+                                                          ".novanode.yml")))
+            # Patch the already-imported op_cli/secrets copies that the test
+            # suite loaded at top of file to see the newly-installed mocks.
+            import op_cli as cli
+            importlib.reload(cli)
+            from ui.screens import secrets as secrets_screen
+            importlib.reload(secrets_screen)
+            app = NovaSecretsApp()
+            async with app.run_test(size=(100, 36)) as pilot:
+                await pilot.pause()
+                self.assertEqual(len(app.screen.query(".dev-banner")), 1)
+                labels = [row._label for row in app.screen._rows]
+                self.assertIn("Open op CLI session", labels)
+        finally:
+            _os.chdir(prev_cwd)
+            if prev_home is None:
+                _os.environ.pop("NNOP_DEV_HOME", None)
+            else:
+                _os.environ["NNOP_DEV_HOME"] = prev_home
+            if prev_dev is None:
+                _os.environ.pop("NNOP_DEV", None)
+            else:
+                _os.environ["NNOP_DEV"] = prev_dev
+            shutil.rmtree(tmp, ignore_errors=True)
+            # Restore the real `op` module for subsequent tests.
+            import op as real_op
+            importlib.reload(real_op)
+            import op_cli as cli
+            importlib.reload(cli)
+            from ui.screens import secrets as secrets_screen
+            importlib.reload(secrets_screen)
+
     async def test_status_screen_displays_existing_cli_output(self):
         result = SimpleNamespace(returncode=0, stdout="NovaNode · 1Password Status\nAuthentication signed out\n", stderr="")
         with mock.patch.object(op, "installed", return_value=True), \

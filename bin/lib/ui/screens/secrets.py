@@ -24,8 +24,8 @@ class SecretsScreen(Screen):
         ("g", "init", "Initialize"), ("u", "use", "Switch"),
         ("p", "pull", "Pull"), ("i", "import_env", "Import"),
         ("t", "template", "Template"), ("c", "copy", "Copy"),
-        ("r", "refresh", "Refresh"), ("q", "quit", "Quit"),
-        ("escape", "quit", "Quit"),
+        ("o", "op_cli", "op CLI"), ("r", "refresh", "Refresh"),
+        ("q", "quit", "Quit"), ("escape", "quit", "Quit"),
     ]
     DEFAULT_CSS = """
     SecretsScreen { layout: vertical; }
@@ -50,6 +50,10 @@ class SecretsScreen(Screen):
     #secrets-content NovaActionLabel { text-style: bold; }
     .section-title { color: #50C900; text-style: bold; margin: 1 0 1 0; }
     .context { color: #9AA39C; }
+    .dev-banner {
+        color: #050706; background: #FFB000;
+        text-style: bold; padding: 0 1; margin-bottom: 1;
+    }
     """
 
     def __init__(self, **kwargs):
@@ -61,10 +65,12 @@ class SecretsScreen(Screen):
         self._generation = 0
 
     def compose(self) -> ComposeResult:
-        yield NovaHeader("NOVANODE", "/ SECRETS")
+        import os as _os
+        subtitle = "/ SECRETS · DEV" if _os.environ.get("NNOP_DEV") else "/ SECRETS"
+        yield NovaHeader("NOVANODE", subtitle)
         yield VerticalScroll(id="secrets-content")
         yield NovaFooter([("↑↓", "Navigate"), ("Enter", "Select"),
-                          ("A", "Add"), ("Q", "Quit")])
+                          ("A", "Add"), ("O", "op CLI"), ("Q", "Quit")])
 
     def on_mount(self) -> None:
         self.refresh_menu()
@@ -80,6 +86,7 @@ class SecretsScreen(Screen):
         container.mount(Static(title, classes="section-title"))
 
     def refresh_menu(self, message=""):
+        import os as _os
         container = self.query_one("#secrets-content", VerticalScroll)
         self._generation += 1
         container.remove_children()
@@ -87,6 +94,11 @@ class SecretsScreen(Screen):
         installed = op.installed()
         identity = op.whoami() if installed else None
         ctx = op_cli._context()
+        if _os.environ.get("NNOP_DEV"):
+            container.mount(Static(
+                "DEV MODE · mock vault, no real 1Password · tmp folder "
+                + _os.environ.get("NNOP_DEV_HOME", "/tmp/novanode-dev-op"),
+                classes="dev-banner"))
         if message:
             container.mount(Static(message, classes="context"))
         if not identity:
@@ -140,6 +152,7 @@ class SecretsScreen(Screen):
                                   ("Configured accounts", ("cmd", ["accounts"]), ""),
                                   ("Add another account", ("account-add", None), ""),
                                   ("Diagnostics", ("cmd", ["doctor"]), ""),
+                                  ("Open op CLI session", ("op-cli", None), "O"),
                                   ("Sign out", ("cmd", ["logout"]), "")]),
                 ]
                 for heading, actions in sections:
@@ -159,6 +172,8 @@ class SecretsScreen(Screen):
         kind, payload = choice
         if kind == "quit":
             self._exit_or_pop()
+        elif kind == "op-cli":
+            self._launch_op_cli()
         elif kind == "secret":
             name = self._secrets[payload][0]
             if name in self._revealed:
@@ -225,6 +240,34 @@ class SecretsScreen(Screen):
 
     def action_refresh(self):
         self._revealed.clear()
+        self.refresh_menu()
+
+    def action_op_cli(self):
+        self._launch_op_cli()
+
+    def _launch_op_cli(self) -> None:
+        """Suspend Textual and drop into the real `op` CLI — no helper screen."""
+        import os as _os
+        if _os.environ.get("NNOP_DEV"):
+            self.refresh_menu("op CLI handoff is disabled in dev mode.")
+            return
+        try:
+            with self.app.suspend():
+                print()
+                print("  NovaNode  /  op CLI")
+                print("  Running the official 1Password CLI. Ctrl-D to return.")
+                print()
+                try:
+                    subprocess.call(["op"])
+                except FileNotFoundError:
+                    print("  op CLI not found. Install with:")
+                    print("    brew install --cask 1password-cli")
+                try:
+                    input("  Press Enter to return to NovaNode… ")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+        except (KeyboardInterrupt, SystemExit):
+            pass
         self.refresh_menu()
 
     def action_quit(self):

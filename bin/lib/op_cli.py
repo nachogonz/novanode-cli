@@ -1873,11 +1873,28 @@ Security:
   · Secret values enter via prompts, never as CLI arguments.
   · `nn-op env pull --materialize` warns before writing plaintext, chmod 600,
     and auto-appends the output file to .gitignore.
+
+Dev mode:
+  nn-op --dev                        Simulate auth and seed a fake vault in
+                                     $NNOP_DEV_HOME (default /tmp/novanode-dev-op).
+                                     All screens work; nothing talks to real `op`.
+                                     Set NNOP_DEV=1 to make it the default.
 """)
+
+
+def _activate_dev_mode() -> None:
+    """Swap the real `op` wrapper for the dev mock + seed demo data."""
+    import op_dev
+    op_dev.install()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--dev" in argv:
+        argv = [arg for arg in argv if arg != "--dev"]
+        _activate_dev_mode()
+    elif os.environ.get("NNOP_DEV"):
+        _activate_dev_mode()
     if argv and argv[0] in ("-h", "--help", "help"):
         print_help()
         return 0

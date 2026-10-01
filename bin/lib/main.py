@@ -34,6 +34,13 @@ def _run_textual(target: str) -> int:
 
 def main(argv=None):
     argv = list(sys.argv[1:]) if argv is None else list(argv)
+    if "--dev" in argv:
+        argv = [arg for arg in argv if arg != "--dev"]
+        try:
+            import op_dev
+            op_dev.install()
+        except ImportError:
+            pass
     if not argv:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             print_help()
