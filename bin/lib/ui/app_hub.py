@@ -24,6 +24,9 @@ class NovaHubApp(App):
         elif target == "help":
             from .screens.help import HelpScreen
             self.push_screen(HelpScreen())
+        elif target == "connect":
+            from .screens.connect import ConnectScreen
+            self.push_screen(ConnectScreen())
 
     def action_quit(self) -> None:
         self.exit()

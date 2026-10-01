@@ -176,10 +176,16 @@ class UsageScreen(Screen):
         self.load_usage()
 
     def action_connect(self) -> None:
-        # Reuse the legacy connection hub rather than inventing another flow.
-        with self.app.suspend():
-            usage_connect.interactive_hub()
-        self.action_refresh()
+        from .connect import ConnectScreen
+        self.app.push_screen(ConnectScreen())
+
+    def on_screen_resume(self) -> None:
+        # Reload usage data when returning from the connect hub so new
+        # profiles start reporting immediately.
+        try:
+            self.action_refresh()
+        except Exception:
+            pass
 
     def action_quit(self) -> None:
         target = getattr(self.app, "_initial_target", "hub")

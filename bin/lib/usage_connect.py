@@ -448,7 +448,15 @@ def main(argv=None):
         print()
         print("Run `usage connect openai personal` or `usage connect claude personal` to sign in.")
         return 0
-    interactive_hub()
+    try:
+        from ui.app_hub import NovaHubApp
+        from ui.screens.connect import ConnectScreen
+    except ImportError:
+        interactive_hub()
+        return 0
+    app = NovaHubApp()
+    app._initial_target = "connect"
+    app.run()
     return 0
 
 
