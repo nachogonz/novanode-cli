@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -13,6 +14,23 @@ import op_cli
 
 
 class OpAuthenticationTests(unittest.TestCase):
+    def test_resolves_real_op_past_global_novanode_alias(self):
+        with tempfile.TemporaryDirectory() as aliases, tempfile.TemporaryDirectory() as real:
+            wrapper = os.path.join(aliases, "op")
+            binary = os.path.join(real, "op")
+            with open(wrapper, "w") as handle:
+                handle.write("#!/usr/bin/env bash\n# Fast alias for `nn-op`.\nexec nn-op \"$@\"\n")
+            with open(binary, "w") as handle:
+                handle.write("#!/usr/bin/env bash\nexit 0\n")
+            os.chmod(wrapper, 0o755)
+            os.chmod(binary, 0o755)
+            with mock.patch.dict(os.environ, {"PATH": aliases + os.pathsep + real}):
+                self.assertEqual(op.which_op(), binary)
+                with mock.patch("op.subprocess.run", return_value=SimpleNamespace(
+                        returncode=0, stdout='{"email":"test@example.com"}', stderr="")) as run:
+                    self.assertEqual(op.whoami()["email"], "test@example.com")
+                    self.assertEqual(run.call_args.args[0][:2], [binary, "whoami"])
+
     def test_signin_session_keeps_token_only_in_process_environment(self):
         result = SimpleNamespace(returncode=0, stdout="session-token\n")
         with mock.patch.dict(op.os.environ, {}, clear=True), \
@@ -33,21 +51,21 @@ class OpAuthenticationTests(unittest.TestCase):
         add_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
         signin_ok = SimpleNamespace(returncode=0, stdout="new-session\n", stderr="")
         with mock.patch.dict(op.os.environ, {}, clear=True), \
-             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch.object(op, "which_op", return_value="/real/op"), \
              mock.patch("op.subprocess.run",
                         side_effect=[add_ok, signin_ok]) as run:
             self.assertTrue(op.account_add(signin=True))
             self.assertEqual(op.os.environ["OP_SESSION"], "new-session")
         self.assertEqual(run.call_count, 2)
         # Interactive add owns the TTY when fields are missing.
-        self.assertEqual(run.call_args_list[0].args[0], ["op", "account", "add"])
-        self.assertEqual(run.call_args_list[1].args[0], ["op", "signin", "--raw"])
+        self.assertEqual(run.call_args_list[0].args[0], ["/real/op", "account", "add"])
+        self.assertEqual(run.call_args_list[1].args[0], ["/real/op", "signin", "--raw"])
 
     def test_account_add_two_step_persistence_with_all_fields(self):
         add_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
         signin_ok = SimpleNamespace(returncode=0, stdout="piped-session\n", stderr="")
         with mock.patch.dict(op.os.environ, {}, clear=True), \
-             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch.object(op, "which_op", return_value="/real/op"), \
              mock.patch("op.subprocess.run",
                         side_effect=[add_ok, signin_ok]) as run:
             self.assertTrue(op.account_add(
@@ -58,7 +76,7 @@ class OpAuthenticationTests(unittest.TestCase):
         add_call = run.call_args_list[0]
         signin_call = run.call_args_list[1]
         self.assertEqual(add_call.args[0], [
-            "op", "account", "add",
+            "/real/op", "account", "add",
             "--address", "nakdev.1password.com",
             "--email", "dev@novanode.local",
             "--secret-key", "A3-SECRET-KEY",
@@ -66,7 +84,7 @@ class OpAuthenticationTests(unittest.TestCase):
         self.assertTrue(add_call.kwargs.get("capture_output"))
         self.assertNotIn("input", add_call.kwargs)
         self.assertEqual(signin_call.args[0], [
-            "op", "signin", "--raw",
+            "/real/op", "signin", "--raw",
             "--account", "nakdev.1password.com",
         ])
         self.assertEqual(signin_call.kwargs.get("input"), "hunter2\n")
@@ -76,7 +94,7 @@ class OpAuthenticationTests(unittest.TestCase):
         signin_bad = SimpleNamespace(returncode=1, stdout="",
                                      stderr="wrong password\n")
         with mock.patch.dict(op.os.environ, {}, clear=True), \
-             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch.object(op, "which_op", return_value="/real/op"), \
              mock.patch("op.subprocess.run",
                         side_effect=[add_ok, signin_bad]):
             # Account was added, so the function returns True; session is

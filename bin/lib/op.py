@@ -40,21 +40,21 @@ class OpError(Exception):
 def which_op() -> Optional[str]:
     """Return the path to the real 1Password `op` CLI.
 
-    Skips `<repo>/bin/op`, which is a NovaNode-provided shortcut that
-    forwards to `nn-op`. Resolving to that would create a loop as soon as
-    nn-op shells out to `op` for a real 1Password call.
+    Skip NovaNode's shortcut even when installed globally through npm (and
+    symlinked into a different PATH entry). Otherwise `op whoami` starts
+    another nn-op process indefinitely.
     """
-    nn_bin = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
     for entry in (os.environ.get("PATH") or "").split(os.pathsep):
         if not entry:
             continue
-        try:
-            if os.path.realpath(entry) == nn_bin:
-                continue
-        except OSError:
-            pass
         candidate = os.path.join(entry, "op")
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            try:
+                with open(candidate, "rb") as handle:
+                    if b"# Fast alias for `nn-op`." in handle.read(512):
+                        continue
+            except OSError:
+                continue
             return candidate
     return None
 
@@ -64,10 +64,11 @@ def installed() -> bool:
 
 
 def version() -> Optional[str]:
-    if not installed():
+    binary = which_op()
+    if not binary:
         return None
     try:
-        return subprocess.check_output(["op", "--version"], text=True, timeout=5).strip()
+        return subprocess.check_output([binary, "--version"], text=True, timeout=5).strip()
     except Exception:
         return None
 
@@ -89,9 +90,10 @@ def _run(
     capture_stdout=True, stdin/stderr still belong to `op` while its session
     token is captured instead of printed.
     """
-    if not installed():
+    binary = which_op()
+    if not binary:
         raise OpError("1Password CLI (`op`) is not installed.", code=127)
-    cmd = ["op", *args]
+    cmd = [binary, *args]
     if inherit_tty:
         result = subprocess.run(
             cmd,
@@ -208,10 +210,11 @@ def account_add(
     interactive wizard (inherits the TTY). If signin is requested but no
     password is provided, we hand the TTY to `op` for the signin step too.
     """
-    if not installed():
+    binary = which_op()
+    if not binary:
         raise OpError("1Password CLI (`op`) is not installed.", code=127)
     # ── Step 1: add the account ───────────────────────────────────────
-    add_args = ["op", "account", "add"]
+    add_args = [binary, "account", "add"]
     if address:
         add_args += ["--address", address]
     if email:
@@ -240,7 +243,7 @@ def account_add(
     if not signin:
         return True
     # ── Step 2: sign in to retain a session for this process ──────────
-    signin_args = ["op", "signin", "--raw"]
+    signin_args = [binary, "signin", "--raw"]
     if address:
         signin_args += ["--account", address]
     if password:
@@ -386,7 +389,10 @@ def run_with_env(env_file: str, command: List[str], no_masking: bool = False) ->
     `op` resolves them at process start; the child sees real values,
     stdout is masked by default.
     """
-    args = ["op", "run", f"--env-file={env_file}"]
+    binary = which_op()
+    if not binary:
+        raise OpError("1Password CLI (`op`) is not installed.", code=127)
+    args = [binary, "run", f"--env-file={env_file}"]
     if no_masking:
         args.append("--no-masking")
     args += ["--", *command]

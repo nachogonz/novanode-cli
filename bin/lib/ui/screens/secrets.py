@@ -268,7 +268,10 @@ class SecretsScreen(Screen):
                 print("  Running the official 1Password CLI. Ctrl-D to return.")
                 print()
                 try:
-                    subprocess.call(["op"])
+                    binary = op.which_op()
+                    if not binary:
+                        raise FileNotFoundError("1Password CLI")
+                    subprocess.call([binary])
                 except FileNotFoundError:
                     print("  op CLI not found. Install with:")
                     print("    brew install --cask 1password-cli")
