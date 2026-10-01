@@ -742,10 +742,17 @@ def cmd_env_set(args: List[str]) -> int:
 
 def cmd_env_import(args: List[str]) -> int:
     _require_auth()
-    if not args:
-        _print_error("usage: nn-op env import <path-to-env> [<app>] [<env>]")
+    assume_yes = False
+    positional: List[str] = []
+    for token in args:
+        if token in ("-y", "--yes", "--force"):
+            assume_yes = True
+        else:
+            positional.append(token)
+    if not positional:
+        _print_error("usage: nn-op env import <path-to-env> [<app>] [<env>] [--yes]")
         return 2
-    path = args[0]
+    path = positional[0]
     if not os.path.isfile(path):
         _print_error(f"file not found: {path}")
         return 1
@@ -753,7 +760,7 @@ def cmd_env_import(args: List[str]) -> int:
     if not entries:
         _print_error("no KEY=VALUE lines found.")
         return 1
-    project, app, env = _resolve(args[1:])
+    project, app, env = _resolve(positional[1:])
     print()
     print(f"  Detected {_color(str(len(entries)), BOLD)} variables in {path}")
     print()
@@ -767,7 +774,8 @@ def cmd_env_import(args: List[str]) -> int:
         for key, _ in configs:
             print(f"    [ ] {key}")
     print()
-    if not _prompt_yes_no(f"Import {len(secrets)} secret(s) into {project}/{app}-{env}?"):
+    if not assume_yes and not _prompt_yes_no(
+            f"Import {len(secrets)} secret(s) into {project}/{app}-{env}?"):
         print("cancelled.")
         return 1
     title = f"{app}-{env}"

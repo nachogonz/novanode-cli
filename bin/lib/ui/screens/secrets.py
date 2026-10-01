@@ -1,5 +1,6 @@
 """Textual controls over the existing nn-op menus and command dispatcher."""
 
+import os
 import re
 import subprocess
 import sys
@@ -138,8 +139,8 @@ class SecretsScreen(Screen):
                     container.mount(Static("No app/env selected or no variables yet"))
                 sections = [
                     ("SECRETS", [("Add secret", ("add", None), "A"),
-                                 ("Import a .env file", ("cmd", ["env", "import"]), "I"),
-                                 ("Pull to .env", ("cmd", ["env", "pull", "--materialize"]), "P"),
+                                 ("Import a .env file", ("env-import", None), "I"),
+                                 ("Pull to .env", ("env-pull", None), "P"),
                                  ("Write .env.template", ("cmd", ["env", "template", "--out", ".env.template"]), "T")]),
                     ("WORKSPACE", [("Switch app / environment", ("cmd", ["env", "use"]), "U"),
                                    ("Browse environments", ("cmd", ["env", "envs"]), ""),
@@ -181,7 +182,8 @@ class SecretsScreen(Screen):
             else:
                 self._revealed.add(name)
             self.refresh_menu()
-        elif kind in ("signin", "account-add", "cmd", "add", "install-help"):
+        elif kind in ("signin", "account-add", "cmd", "add", "install-help",
+                      "env-import", "env-pull"):
             source = next((row for row in self._rows
                            if self._choices.get(row._action_id) == choice), None)
             label = source._label if source else "NovaNode action"
@@ -221,10 +223,10 @@ class SecretsScreen(Screen):
         self._run_choice(("cmd", ["env", "use"]))
 
     def action_pull(self):
-        self._run_choice(("cmd", ["env", "pull", "--materialize"]))
+        self._run_choice(("env-pull", None))
 
     def action_import_env(self):
-        self._run_choice(("cmd", ["env", "import"]))
+        self._run_choice(("env-import", None))
 
     def action_template(self):
         self._run_choice(("cmd", ["env", "template", "--out", ".env.template"]))
@@ -350,6 +352,27 @@ class OpActionScreen(Screen):
                 yield Input(placeholder="Sign-in address (e.g. example.1password.com)",
                             id="input-address")
                 yield Input(placeholder="Email", id="input-email")
+            elif self.choice[0] == "env-import":
+                yield Static("Push a local .env file into 1Password without leaving this UI.",
+                             classes="action-note")
+                yield Static("Variables classified as secrets get written to the current project / app / env item. Config values (PORT, PUBLIC_*, …) are skipped.",
+                             classes="action-note")
+                ctx = op_cli._context()
+                target = (f"{ctx.project} / {ctx.default_app or '?'} / "
+                          f"{ctx.default_env or '?'}") if ctx and ctx.project else "the current workspace"
+                yield Static(f"Target: {target}", classes="action-note")
+                yield Static("Path to the .env file:", classes="action-note")
+                yield Input(value=".env", id="input-path",
+                            placeholder="./path/to/.env")
+            elif self.choice[0] == "env-pull":
+                yield Static("Materialize real secret values to a plaintext .env file on disk.",
+                             classes="action-note")
+                yield Static("The file is chmod 600 and auto-added to .gitignore. Prefer `Run with secrets` unless your tool needs a .env file.",
+                             classes="action-note")
+                yield Static("Output path (defaults to .env in this directory):",
+                             classes="action-note")
+                yield Input(value=".env", id="input-path",
+                            placeholder=".env")
             elif self.choice[0] == "signin":
                 yield Static("NovaNode selects your configured account, then 1Password handles the sign-in prompt.",
                              classes="action-note")
@@ -363,14 +386,19 @@ class OpActionScreen(Screen):
                              "https://developer.1password.com/docs/cli/get-started/",
                              classes="action-output")
             elif not self.read_only:
-                yield NovaAction("Continue", "flow-start", shortcut="Enter")
+                continue_label = {"env-import": "Import", "env-pull": "Write .env"}.get(
+                    self.choice[0], "Continue")
+                yield NovaAction(continue_label, "flow-start", shortcut="Enter")
             yield NovaAction("Back to secrets", "flow-back", shortcut="Esc")
-        yield NovaFooter([("Enter", "Continue" if not self.read_only else "View"),
+        yield NovaFooter([("Enter", "Run" if self.choice[0] in ("env-import", "env-pull")
+                                     else ("Continue" if not self.read_only else "View")),
                           ("Esc", "Back")])
 
     def on_mount(self) -> None:
         if self.choice[0] == "account-add":
             self.query_one("#input-address", Input).focus()
+        elif self.choice[0] in ("env-import", "env-pull"):
+            self.query_one("#input-path", Input).focus()
         else:
             target = "#action-flow-back" if self.read_only or self.choice[0] == "install-help" else "#action-flow-start"
             self.query_one(target, NovaAction).focus()
@@ -399,6 +427,9 @@ class OpActionScreen(Screen):
 
     def execute(self) -> None:
         kind, payload = self.choice
+        if kind in ("env-import", "env-pull"):
+            self._run_env_flow(kind)
+            return
         address = email = None
         if kind == "account-add":
             try:
@@ -432,6 +463,62 @@ class OpActionScreen(Screen):
         self.query_one("#action-flow-start", NovaAction).remove()
         self.query_one("#action-flow-back", NovaAction).focus()
 
+    def _run_env_flow(self, kind: str) -> None:
+        try:
+            path = (self.query_one("#input-path", Input).value or "").strip()
+        except Exception:
+            path = ""
+        content = self.query_one("#action-content", VerticalScroll)
+        if not path:
+            content.mount(Static("Enter a path first.", classes="action-output"))
+            try:
+                self.query_one("#input-path", Input).focus()
+            except Exception:
+                pass
+            return
+        if kind == "env-import":
+            args = ["env", "import", path, "--yes"]
+            label = f"env import {path}"
+        else:
+            args = ["env", "pull", "--materialize", "--force", "--out", path]
+            label = f"env pull --materialize --out {path}"
+        content.mount(Static(f"$ nn-op {label}", classes="action-output"))
+        placeholder = Static("Running…", id="action-flow-output", classes="action-output")
+        content.mount(placeholder)
+        try:
+            self.query_one("#action-flow-start", NovaAction).remove()
+        except Exception:
+            pass
+        self._run_env_subprocess(args)
+
+    @work(thread=True, exclusive=True)
+    def _run_env_subprocess(self, args) -> None:
+        env = dict(os.environ)
+        try:
+            result = subprocess.run(
+                [sys.executable, op_cli.__file__, *args],
+                capture_output=True, text=True, timeout=120, check=False,
+                env=env,
+            )
+            output = ANSI.sub("", (result.stdout or "") + (result.stderr or "")).strip()
+            if not output:
+                output = "Done." if result.returncode == 0 else "No output."
+            if result.returncode != 0:
+                output += f"\n\nExit code: {result.returncode}"
+        except (OSError, subprocess.SubprocessError) as error:
+            output = f"Unable to run: {error}"
+        self.app.call_from_thread(self._finish_env_flow, output)
+
+    def _finish_env_flow(self, output: str) -> None:
+        try:
+            self.query_one("#action-flow-output", Static).update(output)
+        except Exception:
+            pass
+        try:
+            self.query_one("#action-flow-back", NovaAction).focus()
+        except Exception:
+            pass
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "input-address":
             try:
@@ -439,6 +526,8 @@ class OpActionScreen(Screen):
             except Exception:
                 pass
         elif event.input.id == "input-email":
+            self.execute()
+        elif event.input.id == "input-path":
             self.execute()
 
     def action_activate(self) -> None:
