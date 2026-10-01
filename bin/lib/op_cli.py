@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 from typing import List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import op  # noqa: E402
 
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
@@ -1222,32 +1223,36 @@ def _signed_out_items(accounts: List[dict], installed: bool):
             tm.Item(divider=True),
             tm.Item(label="Quit", value=("quit", None)),
         ]
-    count = len(accounts)
-    account_note = (
-        f"Unlock one of {count} configured {'account' if count == 1 else 'accounts'}."
-        if accounts else
-        "No configured account yet; add one below."
-    )
-    return [
-        tm.Item(
-            label="Secure your project environments",
-            heading=True,
-            subtitle="Authenticate before project setup or secret access.",
-        ),
-        tm.Item(divider=True),
-        tm.Item(
-            label="Sign in to 1Password",
-            value=("signin", None),
-            subtitle=account_note,
-            badge="ENTER",
-            badge_color=tm.ORANGE,
-        ),
-        tm.Item(
-            label="Add a 1Password account",
-            value=("account-add", None),
-            subtitle="Enter your email, Secret Key, and password in 1Password's secure prompt.",
-            badge="A",
-        ),
+    if accounts:
+        label = (f"Sign in as {accounts[0].get('email') or accounts[0].get('url') or '1Password user'}"
+                 if len(accounts) == 1 else "Choose an account to sign in")
+        subtitle = ("Account already added on this device · unlock it to continue."
+                    if len(accounts) == 1 else
+                    f"{len(accounts)} accounts on this device · choose one to unlock.")
+        items = [
+            tm.Item(
+                label="ACCOUNT READY · SIGNED OUT", heading=True,
+                subtitle="Your account is set up; sign in to access secrets.",
+            ),
+            tm.Item(divider=True),
+            tm.Item(label=label, value=("signin", None), subtitle=subtitle,
+                    badge="ENTER", badge_color=tm.ORANGE),
+            tm.Item(label="Connect a different account", value=("account-add", None),
+                    subtitle="Only for an account not already listed here · internet required.",
+                    badge="A"),
+        ]
+    else:
+        items = [
+            tm.Item(
+                label="NO ACCOUNT ON THIS DEVICE", heading=True,
+                subtitle="Connect a 1Password account to access project secrets.",
+            ),
+            tm.Item(divider=True),
+            tm.Item(label="Connect a 1Password account", value=("account-add", None),
+                    subtitle="Internet required · 1Password will collect your Secret Key and password.",
+                    badge="ENTER", badge_color=tm.ORANGE),
+        ]
+    return items + [
         tm.Item(divider=True),
         tm.Item(label="Connection status", value=("cmd", ["status"])),
         tm.Item(label="Quit", value=("quit", None)),
@@ -1334,7 +1339,7 @@ def _interactive_sign_in(
 ) -> Tuple[bool, str]:
     import tuimenu as tm
     if not accounts:
-        return False, "No account configured. Choose Add a 1Password account first."
+        return False, "No account configured. Choose Connect a 1Password account first."
     if not account:
         account = _pick_account(accounts)
     if not account:
@@ -1359,9 +1364,21 @@ def _interactive_add_account(
     """Hand off to `op account add` for the Secret Key + password prompts.
 
     When `address` and `email` arrive pre-collected (from the Textual UI),
-    they are passed to `op` as flags so the only remaining interactive
-    prompts are the ones that must stay inside 1Password's own secure UI.
+    they are passed to `op` as flags. The CLI collects the Secret Key and
+    password on the terminal, not in NovaNode's UI or process arguments.
     """
+    if address and email:
+        host = urlsplit(address if "://" in address else f"https://{address}").hostname
+        for account in op.account_list():
+            account_url = account.get("url") or ""
+            account_host = urlsplit(
+                account_url if "://" in account_url else f"https://{account_url}"
+            ).hostname
+            if (host and host == account_host and
+                    email.casefold() == (account.get("email") or "").casefold()):
+                return _interactive_sign_in(
+                    [account], account=account.get("shorthand") or account_url
+                )
     import tuimenu as tm
     tm.clear_screen()
     note = (
@@ -1373,7 +1390,12 @@ def _interactive_add_account(
     print(f"  {tm.paint('NovaNode never stores or prints these credentials.', tm.DIM)}")
     print()
     if not op.account_add(signin=True, address=address, email=email):
-        return False, "Account setup was cancelled or failed"
+        if sys.stdin.isatty():
+            try:
+                input("  Account setup failed or cancelled. Press Enter to return… ")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        return False, "Account setup failed or cancelled; see the 1Password CLI error above"
     identity = op.whoami()
     if not identity:
         return False, "Account was added, but the session could not be verified"

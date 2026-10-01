@@ -66,13 +66,11 @@ class NovaFooter(Container):
     def set_hints(self, hints: list[tuple[str, str]]) -> None:
         self._hints = hints
         self.remove_children()
-        self.mount_all([self._make_hint(key, desc) for key, desc in hints])
-
-    def _make_hint(self, key: str, desc: str) -> Horizontal:
-        h = Horizontal()
-        h.mount(Label(f"[{key}]", classes="NovaFooterKey", markup=False))
-        h.mount(Label(f" {desc} ", classes="NovaFooterDesc", markup=False))
-        return h
+        widgets = []
+        for key, desc in hints:
+            widgets.append(Label(f"[{key}]", classes="NovaFooterKey", markup=False))
+            widgets.append(Label(f" {desc} ", classes="NovaFooterDesc", markup=False))
+        self.mount_all(widgets)
 
 
 class NovaSection(Container):

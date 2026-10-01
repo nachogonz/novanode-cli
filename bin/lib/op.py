@@ -192,81 +192,36 @@ def account_add(
     signin: bool = False,
     address: Optional[str] = None,
     email: Optional[str] = None,
-    secret_key: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> bool:
-    """Register a 1Password account with the official `op` CLI.
+    """Let the official CLI collect credentials on the terminal.
 
-    Done in two steps so the account persists even if signin fails:
-
-      1. `op account add --address X --email Y --secret-key Z` — no password
-         required. On success the account is recorded in ~/.config/op/ and
-         survives any future reinstall or version bump of NovaNode.
-      2. `op signin --raw --account X` with the password piped on stdin —
-         produces the session token for the current process. Failures here
-         don't un-register the account; the user can sign in manually.
-
-    If address/email/secret_key are missing, falls back to `op`'s own
-    interactive wizard (inherits the TTY). If signin is requested but no
-    password is provided, we hand the TTY to `op` for the signin step too.
+    `op account add` has no --secret-key flag. With --signin --raw it
+    authenticates in one step and prints only a session token, which we keep
+    in this process. Call from a suspended TUI so its prompts are visible.
     """
     binary = which_op()
     if not binary:
         raise OpError("1Password CLI (`op`) is not installed.", code=127)
-    # ── Step 1: add the account ───────────────────────────────────────
     add_args = [binary, "account", "add"]
     if address:
         add_args += ["--address", address]
     if email:
         add_args += ["--email", email]
-    if secret_key:
-        add_args += ["--secret-key", secret_key]
-    can_run_add_silently = bool(address and email and secret_key)
-    if can_run_add_silently:
-        try:
-            result = subprocess.run(
-                add_args, capture_output=True, text=True, timeout=120,
-            )
-        except subprocess.SubprocessError as err:
-            raise OpError(f"op account add failed to launch: {err}", code=1)
-        if result.returncode != 0:
-            raise OpError(
-                (result.stderr or result.stdout or "op account add failed").strip(),
-                stderr=result.stderr or "",
-                code=result.returncode,
-            )
-    else:
-        # Interactive wizard owns the terminal for whatever we didn't supply.
-        result = subprocess.run(add_args, timeout=None)
-        if result.returncode != 0:
+    if signin:
+        add_args += ["--signin", "--raw"]
+    result = subprocess.run(
+        add_args,
+        stdout=subprocess.PIPE if signin else None,
+        text=signin,
+        timeout=None,
+    )
+    if result.returncode != 0:
+        return False
+    if signin:
+        token = (result.stdout or "").strip()
+        if not token:
             return False
-    if not signin:
-        return True
-    # ── Step 2: sign in to retain a session for this process ──────────
-    signin_args = [binary, "signin", "--raw"]
-    if address:
-        signin_args += ["--account", address]
-    if password:
-        try:
-            result = subprocess.run(
-                signin_args, input=password + "\n",
-                capture_output=True, text=True, timeout=120,
-            )
-        except subprocess.SubprocessError:
-            # Account is already added — leave it registered and let the
-            # user sign in later.
-            return True
-        token = (result.stdout or "").strip().splitlines()
-        if result.returncode == 0 and token:
-            _remember_session(token[-1], address)
-    else:
-        result = subprocess.run(
-            signin_args, stdout=subprocess.PIPE, text=True, timeout=None,
-        )
-        if result.returncode == 0:
-            token = (result.stdout or "").strip()
-            if token:
-                _remember_session(token, address)
+        _remember_session(token, address)
     return True
 
 

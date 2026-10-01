@@ -49,29 +49,65 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
             app = NovaSecretsApp()
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
-                self.assertEqual(app.focused, app.screen._rows[1])
+                self.assertEqual(app.focused, app.screen._rows[0])
                 await pilot.press("down")
-                self.assertEqual(app.focused, app.screen._rows[2])
-                await pilot.press("up")
                 self.assertEqual(app.focused, app.screen._rows[1])
+                await pilot.press("up")
+                self.assertEqual(app.focused, app.screen._rows[0])
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.screen.label, "Add a 1Password account")
+                self.assertEqual(app.screen.label, "Connect a 1Password account")
                 self.assertEqual(len(app.screen.query("#input-address")), 1)
-                self.assertEqual(len(app.screen.query("#input-password")), 1)
+                self.assertEqual(len(app.screen.query("#input-password")), 0)
+                self.assertEqual(len(app.screen.query("#input-secret")), 0)
                 await pilot.press("escape")
                 await pilot.pause()
-                await pilot.click(f"#{app.screen._rows[1].id}")
+                await pilot.click(f"#{app.screen._rows[0].id}")
                 await pilot.pause()
-                self.assertEqual(app.screen.label, "Add a 1Password account")
+                self.assertEqual(app.screen.label, "Connect a 1Password account")
                 await pilot.press("escape")
                 await pilot.press("q")
 
-    async def test_account_add_sends_all_four_fields_to_op(self):
+    async def test_existing_account_shows_identity_and_sign_in_first(self):
+        account = {"email": "dev@example.com", "url": "https://example.1password.com",
+                   "shorthand": "example"}
+        with mock.patch.object(op, "installed", return_value=True), \
+             mock.patch.object(op, "whoami", return_value=None), \
+             mock.patch.object(op, "account_list", return_value=[account]):
+            app = NovaSecretsApp()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                self.assertEqual(app.screen._rows[0]._label, "Sign in as dev@example.com")
+                self.assertEqual(app.screen._rows[1]._label, "Connect a different account")
+                self.assertTrue(any(
+                    "Account on this device: dev@example.com" in str(widget.render())
+                    for widget in app.screen.query("#secrets-content Static")
+                ))
+                self.assertEqual(app.focused, app.screen._rows[0])
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.screen.choice[0], "signin")
+
+    async def test_no_account_prompts_to_connect_instead_of_sign_in(self):
+        with mock.patch.object(op, "installed", return_value=True), \
+             mock.patch.object(op, "whoami", return_value=None), \
+             mock.patch.object(op, "account_list", return_value=[]):
+            app = NovaSecretsApp()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                self.assertEqual([row._label for row in app.screen._rows[:2]],
+                                 ["Connect a 1Password account", "Connection status"])
+                await pilot.press("l")
+                await pilot.pause()
+                self.assertEqual(app.screen.choice[0], "account-add")
+
+    async def test_account_add_hands_off_credentials_to_op_terminal(self):
         with mock.patch.object(op, "installed", return_value=True), \
              mock.patch.object(op, "whoami", return_value=None), \
              mock.patch.object(op, "account_list", return_value=[]), \
-             mock.patch.object(op, "account_add", return_value=True) as add:
+             mock.patch.object(NovaSecretsApp, "suspend", return_value=contextlib.nullcontext()), \
+             mock.patch.object(op_cli, "_interactive_add_account",
+                               return_value=(True, "Connected")) as add:
             app = NovaSecretsApp()
             async with app.run_test(size=(100, 36)) as pilot:
                 await pilot.pause()
@@ -80,20 +116,9 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
                 from textual.widgets import Input as _Input
                 app.screen.query_one("#input-address", _Input).value = "nakdev.1password.com"
                 app.screen.query_one("#input-email", _Input).value = "dev@novanode.local"
-                app.screen.query_one("#input-secret", _Input).value = "A3-SECRET"
-                app.screen.query_one("#input-password", _Input).value = "hunter2"
                 await pilot.click("#action-flow-start")
-                for _ in range(10):
-                    if add.call_count:
-                        break
-                    await pilot.pause()
-                add.assert_called_once_with(
-                    signin=True,
-                    address="nakdev.1password.com",
-                    email="dev@novanode.local",
-                    secret_key="A3-SECRET",
-                    password="hunter2",
-                )
+                await pilot.pause()
+                add.assert_called_once_with("nakdev.1password.com", "dev@novanode.local")
 
     async def test_usage_refresh_renders_new_rows_without_duplicate_ids(self):
         rows = [dict(provider="openai", name="Codex CLI · Nova", version="1",
@@ -266,7 +291,7 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
             app = NovaSecretsApp()
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
-                await pilot.click(f"#{app.screen._rows[2].id}")
+                await pilot.click(f"#{app.screen._rows[1].id}")
                 await pilot.pause()
                 self.assertEqual(app.screen.label, "Connection status")
                 self.assertIn("Authentication signed out",
@@ -274,4 +299,4 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(run.call_args.args[0][1:], [op_cli.__file__, "status"])
                 await pilot.press("escape")
                 await pilot.pause()
-                self.assertEqual(len(app.screen._rows), 4)
+                self.assertEqual(len(app.screen._rows), 3)

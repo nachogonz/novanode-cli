@@ -225,7 +225,7 @@ def codex_rate_limits(account):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "nn-usage", "version": "1.3.2"}},
+            "params": {"clientInfo": {"name": "nn-usage", "version": "1.3.3"}},
         })
         deadline = time.monotonic() + 8
         initialized = False
