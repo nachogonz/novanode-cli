@@ -1156,6 +1156,16 @@ def cmd_interactive() -> int:
     except ImportError:
         tuimenu = None
     ctx = _context()
+    if tuimenu is not None and tuimenu.is_tty():
+        try:
+            from ui.app_hub import NovaHubApp
+        except ImportError:
+            pass
+        else:
+            app = NovaHubApp()
+            app._initial_target = "secrets"
+            app.run()
+            return 0
     if tuimenu is None or not tuimenu.is_tty():
         _print_header("Secrets")
         identity = op.whoami() if op.installed() else None
@@ -1271,10 +1281,15 @@ def _workspace_setup_items():
 
 
 def _flow_header(title: str, note: str) -> None:
+    """Minimal black-themed handoff header shown before the official `op` CLI
+    takes over the terminal for secure prompts (Secret Key / password).
+
+    Deliberately colorless so it blends with the Textual UI the user just
+    returned from — no legacy green/orange ANSI.
+    """
     import tuimenu as tm
     print()
     print(f"  {tm.paint('NOVANODE  /  SECRETS', tm.BOLD)}")
-    print(f"  {tm.paint('─' * 56, tm.ORANGE)}")
     print(f"  {tm.paint(title, tm.BOLD)}")
     print(f"  {tm.paint(note, tm.DIM)}")
     print()
@@ -1305,11 +1320,15 @@ def _pick_account(accounts: List[dict]) -> Optional[str]:
     return menu.run()
 
 
-def _interactive_sign_in(accounts: List[dict]) -> Tuple[bool, str]:
+def _interactive_sign_in(
+    accounts: List[dict],
+    account: Optional[str] = None,
+) -> Tuple[bool, str]:
     import tuimenu as tm
     if not accounts:
         return False, "No account configured. Choose Add a 1Password account first."
-    account = _pick_account(accounts)
+    if not account:
+        account = _pick_account(accounts)
     if not account:
         return False, "Sign-in cancelled"
     tm.clear_screen()
@@ -1325,16 +1344,27 @@ def _interactive_sign_in(accounts: List[dict]) -> Tuple[bool, str]:
     return True, f"Signed in as {identity.get('email') or identity.get('url') or '1Password user'}"
 
 
-def _interactive_add_account() -> Tuple[bool, str]:
+def _interactive_add_account(
+    address: Optional[str] = None,
+    email: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Hand off to `op account add` for the Secret Key + password prompts.
+
+    When `address` and `email` arrive pre-collected (from the Textual UI),
+    they are passed to `op` as flags so the only remaining interactive
+    prompts are the ones that must stay inside 1Password's own secure UI.
+    """
     import tuimenu as tm
     tm.clear_screen()
-    _flow_header(
-        "Add a 1Password account",
-        "The official op wizard securely collects your address, email, Secret Key, and password.",
+    note = (
+        "Enter your Secret Key and account password in the official 1Password prompt below."
+        if address and email else
+        "The official op wizard securely collects your address, email, Secret Key, and password."
     )
-    print(f"  {tm.paint('NovaNode never stores or prints these credentials.', tm.GREEN)}")
+    _flow_header("Add a 1Password account", note)
+    print(f"  {tm.paint('NovaNode never stores or prints these credentials.', tm.DIM)}")
     print()
-    if not op.account_add(signin=True):
+    if not op.account_add(signin=True, address=address, email=email):
         return False, "Account setup was cancelled or failed"
     identity = op.whoami()
     if not identity:

@@ -1,0 +1,509 @@
+/* NovaNode Textual Theme — TCSS */
+
+$background: #050706;
+$surface-0: #080B09;
+$surface-1: #0D110E;
+$surface-2: #121713;
+$accent: #75FF00;
+$accent-dim: #50C900;
+$accent-muted: #2E4A1A;
+$cyan: #00D9FF;
+$cyan-dim: #00A8CC;
+$warning: #FFB000;
+$warning-dim: #CC8D00;
+$danger: #FF3B30;
+$danger-dim: #CC2E26;
+$success: #34D399;
+$success-dim: #1FA67A;
+$text-primary: #E7ECE8;
+$text-secondary: #9AA39C;
+$text-muted: #626A64;
+$text-disabled: #3A3F3C;
+$border: #242A25;
+$border-muted: #1A1F1B;
+$border-focus: #75FF00;
+$border-active: #50C900;
+$usage-empty: #141A16;
+$usage-low: #75FF00;
+$usage-medium: #FFB000;
+$usage-high: #FF8C00;
+$usage-critical: #FF3B30;
+$scrim: #000000CC;
+$overlay-bg: #0A0D0B;
+
+/* ─── Global ─── */
+Screen {
+    background: $background;
+    color: $text-primary;
+    layers: base overlay toast;
+}
+
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: $surface-0;
+    scrollbar-color: $border;
+    scrollbar-color-active: $border-focus;
+    scrollbar-corner-color: $surface-0;
+}
+
+/* ─── Layout Primitives ─── */
+NovaContainer {
+    layout: vertical;
+    height: 100%;
+    width: 100%;
+}
+
+NovaHeader {
+    layout: horizontal;
+    height: 3;
+    background: $surface-0;
+    border: tall $border;
+    padding: 0 2;
+}
+
+NovaHeaderTitle {
+    color: $text-primary;
+    text-style: bold;
+    width: auto;
+}
+
+NovaHeaderSubtitle {
+    color: $text-muted;
+    width: 1fr;
+    text-align: right;
+    padding-top: 1;
+}
+
+NovaSection {
+    layout: vertical;
+    margin: 1 2;
+    padding: 1 2;
+    background: $surface-1;
+    border: tall $border-muted;
+}
+
+NovaSectionTitle {
+    color: $accent-dim;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+NovaFooter {
+    layout: horizontal;
+    height: 3;
+    background: $surface-0;
+    border: tall $border;
+    padding: 0 2;
+    dock: bottom;
+}
+
+NovaFooterKey {
+    color: $accent;
+    text-style: bold;
+    margin-right: 1;
+    content-align: left middle;
+    height: 1;
+}
+
+NovaFooterDesc {
+    color: $text-muted;
+    margin-right: 3;
+    content-align: left middle;
+    height: 1;
+}
+
+/* ─── Cards ─── */
+NovaCard {
+    layout: vertical;
+    padding: 1 2;
+    background: $surface-1;
+    border: tall $border;
+    margin: 0 0 1 0;
+    min-height: 5;
+}
+
+NovaCard:focus {
+    border: tall $border-focus;
+    background: $surface-2;
+}
+
+NovaCardTitle {
+    color: $text-primary;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+NovaCardSubtitle {
+    color: $text-secondary;
+    margin-bottom: 1;
+}
+
+NovaCardMeta {
+    color: $text-muted;
+    text-style: dim;
+}
+
+/* ─── Progress Bars ─── */
+NovaUsageBar {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 1 0;
+}
+
+NovaUsageBarLabel {
+    width: 14;
+    color: $text-secondary;
+    text-style: bold;
+    padding-right: 1;
+    content-align: right middle;
+}
+
+NovaUsageBarTrack {
+    width: 1fr;
+    height: 1;
+    background: $usage-empty;
+    border: tall $border-muted;
+    margin-top: 1;
+}
+
+NovaUsageBarFill {
+    height: 1;
+    background: $usage-low;
+}
+
+NovaUsageBarFill.--medium {
+    background: $usage-medium;
+}
+
+NovaUsageBarFill.--high {
+    background: $usage-high;
+}
+
+NovaUsageBarFill.--critical {
+    background: $usage-critical;
+}
+
+NovaUsageBarValue {
+    width: 6;
+    color: $accent;
+    text-style: bold;
+    text-align: right;
+    content-align: center middle;
+}
+
+NovaUsageBarValue.--medium {
+    color: $warning;
+}
+
+NovaUsageBarValue.--high {
+    color: $usage-high;
+}
+
+NovaUsageBarValue.--critical {
+    color: $danger;
+}
+
+NovaUsageBarReset {
+    color: $text-muted;
+    margin-top: 1;
+    text-style: dim;
+}
+
+/* ─── Badges ─── */
+NovaBadge {
+    padding: 0 1;
+    background: $accent-muted;
+    color: $accent;
+    text-style: bold;
+    border: tall $accent-muted;
+}
+
+NovaBadge.--warning {
+    background: #2D260A;
+    color: $warning;
+    border: tall #2D260A;
+}
+
+NovaBadge.--danger {
+    background: #2D1515;
+    color: $danger;
+    border: tall #2D1515;
+}
+
+NovaBadge.--success {
+    background: #0E281C;
+    color: $success;
+    border: tall #0E281C;
+}
+
+NovaBadge.--info {
+    background: #0A242D;
+    color: $cyan;
+    border: tall #0A242D;
+}
+
+NovaBadge.--muted {
+    background: $border-muted;
+    color: $text-muted;
+    border: tall $border-muted;
+}
+
+/* ─── Status Dots ─── */
+NovaStatusDot {
+    width: 2;
+    height: 1;
+    content-align: center middle;
+}
+
+NovaStatusDot.--connected {
+    color: $success;
+}
+
+NovaStatusDot.--connecting {
+    color: $warning;
+}
+
+NovaStatusDot.--disconnected {
+    color: $text-muted;
+}
+
+NovaStatusDot.--error {
+    color: $danger;
+}
+
+NovaStatusDot.--shadowed {
+    color: $text-muted;
+}
+
+/* ─── Menu ─── */
+NovaMenu {
+    layout: vertical;
+    padding: 1 0;
+}
+
+NovaMenuItem {
+    layout: horizontal;
+    height: 3;
+    padding: 0 2;
+    margin: 0 1;
+    background: transparent;
+    border: tall transparent;
+    color: $text-primary;
+}
+
+NovaMenuItem:hover {
+    background: $surface-2;
+    border: tall $border-muted;
+}
+
+NovaMenuItem:focus {
+    background: $surface-2;
+    border: tall $border-focus;
+}
+
+NovaMenuItem.--selected {
+    background: $surface-2;
+    border: tall $border-focus;
+}
+
+NovaMenuItemLabel {
+    width: 1fr;
+}
+
+NovaMenuItemShortcut {
+    color: $accent-dim;
+    text-style: bold;
+    padding-left: 2;
+    content-align: right middle;
+    width: auto;
+}
+
+NovaMenuItemBadge {
+    margin-left: 2;
+}
+
+NovaMenuDivider {
+    height: 1;
+    background: $border-muted;
+    margin: 0 2;
+}
+
+NovaMenuHeading {
+    color: $accent-dim;
+    text-style: bold;
+    padding: 1 2 0 2;
+}
+
+/* ─── Modals/Overlays ─── */
+NovaModal {
+    layer: overlay;
+    layout: vertical;
+    width: 60%;
+    max-width: 80;
+    max-height: 80%;
+    background: $overlay-bg;
+    border: tall $border;
+    padding: 2;
+    margin: 2;
+}
+
+NovaModalTitle {
+    color: $text-primary;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+NovaModalBody {
+    color: $text-secondary;
+    margin-bottom: 2;
+    height: auto;
+}
+
+NovaModalButtons {
+    layout: horizontal;
+    width: 100%;
+    content-align: right middle;
+    height: auto;
+}
+
+NovaModalButton {
+    margin-left: 2;
+    padding: 0 3;
+    height: 3;
+    background: $surface-1;
+    border: tall $border;
+    color: $text-primary;
+}
+
+NovaModalButton:hover {
+    background: $surface-2;
+    border: tall $accent-dim;
+}
+
+NovaModalButton:focus {
+    border: tall $border-focus;
+}
+
+NovaModalButton.--primary {
+    background: $accent-muted;
+    border: tall $accent;
+    color: $accent;
+}
+
+NovaModalButton.--primary:hover {
+    background: $accent;
+    color: $background;
+}
+
+NovaModalButton.--danger {
+    background: #2D1515;
+    border: tall $danger-dim;
+    color: $danger;
+}
+
+NovaModalButton.--danger:hover {
+    background: $danger;
+    color: $background;
+}
+
+/* ─── Toasts ─── */
+NovaToast {
+    layer: toast;
+    layout: horizontal;
+    width: auto;
+    max-width: 60;
+    padding: 1 2;
+    margin: 1;
+    background: $surface-1;
+    border: tall $border;
+    color: $text-primary;
+}
+
+NovaToast.--success {
+    border: tall $success-dim;
+}
+
+NovaToast.--warning {
+    border: tall $warning-dim;
+}
+
+NovaToast.--error {
+    border: tall $danger-dim;
+}
+
+NovaToastIcon {
+    width: 3;
+    content-align: center middle;
+}
+
+NovaToast.--success NovaToastIcon {
+    color: $success;
+}
+
+NovaToast.--warning NovaToastIcon {
+    color: $warning;
+}
+
+NovaToast.--error NovaToastIcon {
+    color: $danger;
+}
+
+NovaToastMessage {
+    width: 1fr;
+}
+
+/* ─── Spinner ─── */
+NovaSpinner {
+    width: 3;
+    height: 1;
+    content-align: center middle;
+    color: $accent;
+}
+
+/* ─── Empty State ─── */
+NovaEmptyState {
+    layout: vertical;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    color: $text-muted;
+}
+
+NovaEmptyStateIcon {
+    color: $text-disabled;
+    margin-bottom: 1;
+}
+
+NovaEmptyStateTitle {
+    color: $text-secondary;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+NovaEmptyStateMessage {
+    color: $text-muted;
+    text-align: center;
+}
+
+/* ─── Key Hints ─── */
+NovaKeyHint {
+    layout: horizontal;
+    height: 1;
+    color: $text-muted;
+}
+
+NovaKeyHintKey {
+    color: $accent-dim;
+    text-style: bold;
+    padding: 0 1;
+    background: $surface-0;
+    border: tall $border-muted;
+    margin-right: 1;
+}
+
+NovaKeyHintDesc {
+    color: $text-muted;
+    margin-right: 2;
+    content-align: left middle;
+}

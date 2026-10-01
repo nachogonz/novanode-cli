@@ -23,19 +23,18 @@ RESET = "\033[0m"
 def help_text():
     print(f"""nn-usage {VERSION}
 
-Clean AI plan-usage dashboard for Claude Code and Codex CLI.
+AI plan-usage dashboard for Claude Code and Codex CLI.
 
 Usage:
-  usage
-  usage connect
+  usage                    Textual dashboard (unified NovaNode UI)
+  usage --classic          Legacy plain-text dashboard
+  usage connect            Manage provider connections
   usage connect manage
   usage connect openai [profile-name]
   usage connect claude [profile-name]
-  usage --summary-tsv
-  usage --json
-  nn-usage
-  nn-usage --summary-tsv
-  nn-usage --json
+  usage --summary-tsv      Tab-separated snapshot
+  usage --json             JSON snapshot
+  nn-usage                 Same as `usage`
   nn-usage --help
   nn-usage --version
 
@@ -142,16 +141,27 @@ def main(argv=None):
         return 0
     if argv and argv[0] == "connect":
         return usage_connect.main(argv[1:])
-    if argv and argv[0] not in ("--summary-tsv", "--json"):
+    if argv and argv[0] not in ("--summary-tsv", "--json", "--classic"):
         print(f"nn-usage: unknown option {argv[0]}", file=sys.stderr)
         return 2
-    rows = usage.fetch_usage()
+    classic = argv == ["--classic"]
     if argv == ["--summary-tsv"]:
-        summary_tsv(rows)
-    elif argv == ["--json"]:
-        print(json.dumps(rows, indent=2))
-    else:
-        dashboard(rows)
+        summary_tsv(usage.fetch_usage())
+        return 0
+    if argv == ["--json"]:
+        print(json.dumps(usage.fetch_usage(), indent=2))
+        return 0
+    if not classic and not argv and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from ui.app_hub import NovaHubApp
+        except ImportError:
+            dashboard(usage.fetch_usage())
+            return 0
+        app = NovaHubApp()
+        app._initial_target = "usage"
+        app.run()
+        return 0
+    dashboard(usage.fetch_usage())
     return 0
 
 

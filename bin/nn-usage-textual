@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Deprecated — kept as a thin shim.
+
+The unified `nn-usage` command now launches the Textual UI directly, so this
+script simply forwards. Prefer `nn-usage` going forward.
+"""
+
+import os
+import sys
+
+repo_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(repo_root, "lib"))
+
+from ui.app_hub import NovaHubApp
+
+if __name__ == "__main__":
+    app = NovaHubApp()
+    app._initial_target = "usage"
+    app.run()

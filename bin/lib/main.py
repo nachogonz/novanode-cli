@@ -14,13 +14,31 @@ from tui import run_tui  # noqa: E402
 VERSION = "1.2.8"
 
 
+def _run_textual(target: str) -> int:
+    """Launch the unified NovaNode Textual UI.
+
+    target: "hub" | "usage" | "secrets" | "help"
+    """
+    try:
+        from ui.app_hub import NovaHubApp
+    except ImportError as error:
+        print(f"nn: Textual UI unavailable ({error}). Install with `pip install textual`.",
+              file=sys.stderr)
+        return 1
+    app = NovaHubApp()
+    if target != "hub":
+        app._initial_target = target  # consumed by HubScreen.on_mount
+    app.run()
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     if not argv:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             print_help()
             return 0
-        return curses.wrapper(run_tui, "PBX")
+        return _run_textual("hub")
     if argv[0] in ("-h", "--help"):
         print_help()
         return 0
@@ -30,7 +48,11 @@ def main(argv=None):
 
     cmd = argv[0]
     if cmd in ("usage",):
-        return curses.wrapper(run_tui, "USAGE")
+        return _run_textual("usage")
+    if cmd in ("secrets", "op"):
+        return _run_textual("secrets")
+    if cmd in ("help",):
+        return _run_textual("help")
     if cmd in ("pbx",):
         sub = argv[1] if len(argv) > 1 else ""
         if sub in ("setup",):
@@ -74,22 +96,24 @@ def run_test_call():
 
 def print_help(scope="main"):
     if scope == "main":
-        print(f"""NovaNode Telephony DevKit · {VERSION}
+        print(f"""NovaNode · {VERSION}
 
-Asterisk development/test station for your Fedora PBX.
+Unified home for telephony, AI plan usage, and 1Password-backed secrets.
 
 Usage:
-  nn                       Open the TUI (USAGE · PBX · PHONE · CALLS · TRUNKS · DEBUG)
-  nn usage                 Open the usage dashboard
+  nn                       Open the unified home (Usage · Secrets · Help)
+  nn usage                 Open the usage dashboard directly
+  nn secrets               Open the secrets dashboard directly
+  nn help                  Open the in-app help screen
   nn pbx                   PBX console (endpoints, trunks, channels, AMI events)
   nn pbx setup             Configure the PBX connection + softphone
   nn pbx doctor            Run connectivity diagnostics
   nn pbx detect            Detect the live Asterisk/PJSIP topology
   nn pbx phone             Open the softphone directly
   nn pbx test-call         Run the 3000 → LiveKit agent test
-  nn calls                 Active channel / call table
-  nn trunks                Outbound SIP trunk registrations
-  nn debug                 SIP/AMI event stream
+  nn calls                 Active channel / call table (curses)
+  nn trunks                Outbound SIP trunk registrations (curses)
+  nn debug                 SIP/AMI event stream (curses)
   nn --version / --help
 """)
     elif scope == "pbx":

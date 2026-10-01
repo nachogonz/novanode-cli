@@ -168,9 +168,22 @@ def signin_session(account: Optional[str] = None) -> bool:
     return True
 
 
-def account_add(signin: bool = False) -> bool:
-    """Run 1Password's native account wizard, optionally retaining its session."""
+def account_add(
+    signin: bool = False,
+    address: Optional[str] = None,
+    email: Optional[str] = None,
+) -> bool:
+    """Run 1Password's native account wizard, optionally retaining its session.
+
+    When address and email are provided, they are passed to `op account add`
+    as flags so the official CLI only has to prompt for the Secret Key and
+    account password — the pieces that must stay inside 1Password's own UI.
+    """
     args = ["account", "add"]
+    if address:
+        args += ["--address", address]
+    if email:
+        args += ["--email", email]
     if signin:
         args += ["--signin", "--raw"]
     result = _run(
