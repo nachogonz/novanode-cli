@@ -430,7 +430,14 @@ def main(argv=None):
         if not tuimenu.is_tty():
             static_status("Run `usage connect manage` in an interactive terminal.")
             return 2
-        interactive_sessions()
+        try:
+            from ui.app_hub import NovaHubApp
+        except ImportError:
+            interactive_sessions()
+            return 0
+        app = NovaHubApp()
+        app._initial_target = "sessions"
+        app.run()
         return 0
     if argv and argv[0] in ("openai", "claude"):
         provider = argv[0]

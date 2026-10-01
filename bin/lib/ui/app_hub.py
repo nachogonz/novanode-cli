@@ -27,6 +27,11 @@ class NovaHubApp(App):
         elif target == "connect":
             from .screens.connect import ConnectScreen
             self.push_screen(ConnectScreen())
+        elif target == "sessions":
+            from .screens.connect import ConnectScreen, SessionsScreen
+            hub = ConnectScreen()
+            self.push_screen(hub)
+            self.push_screen(SessionsScreen(hub))
 
     def action_quit(self) -> None:
         self.exit()
