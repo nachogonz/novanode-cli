@@ -23,13 +23,20 @@ def average(rows, key):
     return sum(values) / len(values) if values else None
 
 
-def meter(value, width=22):
+def meter(value, width=36):
+    """Render a two-row-tall bar with a filled portion plus percent label.
+
+    Uses ▰/▱ block pairs on two stacked rows for a thicker, more professional
+    look than the single-row ━/─ meter the legacy dashboard used.
+    """
     number = usage.pct_num(value)
     if number is None:
-        return Text("─" * width, style=SEMANTIC.border), "—"
-    filled = round(number / 100 * width)
-    bar = Text("━" * filled, style=usage_color_for_percent(number))
-    bar.append("─" * (width - filled), style=SEMANTIC.usage_track)
+        return None, "—"
+    filled = max(0, min(width, round(number / 100 * width)))
+    color = usage_color_for_percent(number)
+    bar = Text()
+    bar.append("▰" * filled, style=color)
+    bar.append("▱" * (width - filled), style=SEMANTIC.usage_track)
     return bar, f"{number:g}%"
 
 
@@ -38,6 +45,9 @@ class ProviderCard(Vertical):
     ProviderCard { height: auto; padding: 1 2; margin: 0 1 1 0;
                    background: #0D110E; border: tall #242A25; }
     ProviderCard Static { height: auto; }
+    .meter-row { margin-top: 1; }
+    .meter-reset { color: #626A64; margin-bottom: 1; }
+    .tier-chip { color: #75FF00; text-style: bold; }
     """
 
     def __init__(self, row, **kwargs):
@@ -46,22 +56,37 @@ class ProviderCard(Vertical):
 
     def compose(self) -> ComposeResult:
         row = self.row
-        yield Static(Text(row.get("name", "Provider"), style="bold #E7ECE8"))
+        header = Text(row.get("name", "Provider"), style="bold #E7ECE8")
+        tier = row.get("plan_tier")
+        if tier:
+            header.append("   ")
+            header.append(tier, style="bold #050706 on #75FF00")
+        yield Static(header)
         yield Static(Text(f"v{row.get('version', 'n/a')}", style=SEMANTIC.text_muted))
         if row.get("usage_status") == "unavailable":
             yield Static(Text("× Usage data temporarily unavailable", style=SEMANTIC.warning))
             yield Static("Retry refresh; other profiles are unaffected.")
             return
+        rendered_any = False
         for index in (1, 2):
             value = row.get(f"used{index}")
+            if usage.pct_num(value) is None:
+                continue  # Hide windows this plan doesn't report.
+            rendered_any = True
             bar, label = meter(value)
-            line = Text(f"{row.get(f'p{index}', ''):<8}", style=SEMANTIC.text)
-            line.append_text(bar)
-            line.append(f"  {label}", style=SEMANTIC.text if label != "—" else SEMANTIC.text_muted)
-            yield Static(line)
-            note = ("not included in this plan" if usage.pct_num(value) is None
-                    else f"resets {row.get(f'reset{index}', 'n/a')}")
-            yield Static(Text(" " * 8 + note, style=SEMANTIC.text_muted))
+            period = row.get(f"p{index}", "") or ""
+            color = usage_color_for_percent(usage.pct_num(value) or 0)
+            header_line = Text()
+            header_line.append(f"{period.upper():<8}", style=SEMANTIC.text_muted)
+            header_line.append(label, style=color)
+            yield Static(header_line, classes="meter-row")
+            yield Static(bar)
+            reset = row.get(f"reset{index}", "n/a")
+            yield Static(Text(f"        resets {reset}", style=SEMANTIC.text_muted),
+                         classes="meter-reset")
+        if not rendered_any:
+            yield Static(Text("No active usage windows reported.",
+                              style=SEMANTIC.text_muted))
 
 
 class UsageScreen(Screen):
@@ -76,6 +101,7 @@ class UsageScreen(Screen):
     .combined { height: auto; padding: 1 2; margin: 0 1;
                 background: #0D110E; border: tall #242A25; }
     .combined Static { height: auto; }
+    .combined-row { margin-top: 1; }
     """
 
     def compose(self) -> ComposeResult:
@@ -119,19 +145,27 @@ class UsageScreen(Screen):
         with_card = Vertical(classes="combined")
         content.mount(with_card)
         with_card.mount(Static(Text("COMBINED LOAD", style="bold #E7ECE8")))
+        combined_width = max(32, min(72, self.size.width - 16))
         for title, value in (("5H", average(rows, "used1")),
                              ("WEEKLY", average(rows, "used2")),
                              ("ALL", combined)):
-            bar, label = meter(value, 32)
-            line = Text(f"{title:<8}", style=SEMANTIC.text)
-            line.append_text(bar)
-            line.append(f"  {label}", style=SEMANTIC.text)
-            with_card.mount(Static(line))
+            bar, label = meter(value, combined_width)
+            number = usage.pct_num(value)
+            if number is None:
+                continue  # Skip combined rows that nobody is reporting.
+            color = usage_color_for_percent(number)
+            header_line = Text()
+            header_line.append(f"{title:<8}", style=SEMANTIC.text_muted)
+            header_line.append(label, style=color)
+            with_card.mount(Static(header_line, classes="combined-row"))
+            with_card.mount(Static(bar))
         reporting = sum(any(usage.pct_num(row.get(key)) is not None
                             for key in ("used1", "used2")) for row in rows)
         suffix = f" · {reporting} reporting live usage" if reporting != len(rows) else ""
-        with_card.mount(Static(f"{len(rows)} connected profiles{suffix}"))
-        with_card.mount(Static("Add another with `usage connect`"))
+        with_card.mount(Static(Text(f"{len(rows)} connected profiles{suffix}",
+                                    style=SEMANTIC.text_muted)))
+        with_card.mount(Static(Text("Add another with `usage connect`",
+                                    style=SEMANTIC.text_muted)))
 
     def action_refresh(self) -> None:
         content = self.query_one("#usage-content", VerticalScroll)

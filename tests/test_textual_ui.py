@@ -39,7 +39,7 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 self.assertEqual(len(app.screen.query("ProviderCard")), 2)
-                self.assertEqual(len(app.screen.query(".combined Static")), 6)
+                self.assertEqual(len(app.screen.query(".combined Static")), 9)
             fetch.assert_called()
 
     async def test_secrets_keyboard_and_mouse_share_account_action(self):
@@ -139,7 +139,7 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
                     async with app.run_test(size=size) as pilot:
                         await pilot.pause()
                         self.assertEqual(len(app.screen.query("ProviderCard")), 1)
-                        self.assertEqual(len(app.screen.query(".combined Static")), 6)
+                        self.assertEqual(len(app.screen.query(".combined Static")), 9)
 
     async def test_authenticated_setup_runs_legacy_dispatch_in_project_directory(self):
         original = os.getcwd()

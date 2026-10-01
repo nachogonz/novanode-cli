@@ -191,6 +191,12 @@ def fetch_claude(account):
         ("Weekly", week.get("utilization"), reset_label(week.get("resets_at"), weekly=True)),
     ), account)
     row["usage_status"] = "live" if live else "unavailable"
+    row["plan_tier"] = _normalize_tier(
+        payload.get("subscription_type")
+        or payload.get("subscription_tier")
+        or payload.get("plan")
+        or payload.get("tier")
+    )
     return row
 
 
@@ -332,7 +338,26 @@ def fetch_codex(account):
         ("Weekly", weekly.get("used") if weekly else None, reset_label(weekly.get("reset") if weekly else None, weekly=True)),
     ), account)
     row["usage_status"] = "live" if live else "unavailable"
+    row["plan_tier"] = _normalize_tier(
+        limits.get("plan")
+        or limits.get("tier")
+        or limits.get("subscription")
+        or limits.get("subscriptionTier")
+    )
     return row
+
+
+def _normalize_tier(value):
+    """Return a short display label (PRO, MAX, TEAM, PLUS, FREE) or None."""
+    if not value:
+        return None
+    text = str(value).strip().upper()
+    if not text:
+        return None
+    for token in ("MAX", "ENTERPRISE", "TEAM", "BUSINESS", "PRO", "PLUS", "FREE"):
+        if token in text:
+            return token
+    return text[:12]
 
 
 def fetch_usage():
