@@ -11,7 +11,7 @@ import usage
 import usage_connect
 
 
-VERSION = "1.2.9"
+VERSION = "1.3.0"
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
 RED = "\033[38;5;196m"
