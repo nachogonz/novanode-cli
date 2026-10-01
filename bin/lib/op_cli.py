@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import op  # noqa: E402
 
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
@@ -1820,7 +1820,7 @@ def dispatch(argv: List[str]) -> int:
 
 
 def print_help(_scope: str = "main") -> None:
-    print(f"""nn-op {VERSION}   ·   also available as {BOLD}nnop{RESET}
+    print(f"""nn-op {VERSION}   ·   also available as {BOLD}op{RESET} and {BOLD}nnop{RESET}
 
 NovaNode 1Password wrapper — a thin, project-aware layer on top of the
 official `op` CLI. Every secret operation delegates to `op`; NovaNode
@@ -1829,6 +1829,7 @@ never stores tokens, values, or session state itself.
 Project-aware: reads .novanode.yml at (or above) the current directory.
 
 Session:
+  op                                 Open the interactive menu (fast alias)
   nnop                               Open the interactive menu (fast alias)
   nn-op                              Open the interactive menu
   nn-op login                        Sign in (delegates to `op signin`)

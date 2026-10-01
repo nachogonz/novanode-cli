@@ -45,9 +45,7 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
     async def test_secrets_keyboard_and_mouse_share_account_action(self):
         with mock.patch.object(op, "installed", return_value=True), \
              mock.patch.object(op, "whoami", return_value=None), \
-             mock.patch.object(op, "account_list", return_value=[]), \
-             mock.patch.object(op_cli, "_interactive_add_account", return_value=(False, "Cancelled")) as add, \
-             mock.patch.object(NovaSecretsApp, "suspend", return_value=contextlib.nullcontext()):
+             mock.patch.object(op, "account_list", return_value=[]):
             app = NovaSecretsApp()
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
@@ -59,48 +57,42 @@ class TextualUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertEqual(app.screen.label, "Add a 1Password account")
-                self.assertEqual(add.call_count, 0)
-                await pilot.click("#action-flow-start")
-                await pilot.pause()
-                self.assertEqual(add.call_count, 1)
-                add.assert_called_with(address=None, email=None)
+                self.assertEqual(len(app.screen.query("#input-address")), 1)
+                self.assertEqual(len(app.screen.query("#input-password")), 1)
                 await pilot.press("escape")
                 await pilot.pause()
                 await pilot.click(f"#{app.screen._rows[1].id}")
                 await pilot.pause()
-                await pilot.click("#action-flow-start")
-                await pilot.pause()
-                self.assertEqual(add.call_count, 2)
-                await pilot.press("escape")
-                await pilot.pause()
-                await pilot.press("a")
-                await pilot.pause()
-                await pilot.click("#action-flow-start")
-                await pilot.pause()
-                self.assertEqual(add.call_count, 3)
+                self.assertEqual(app.screen.label, "Add a 1Password account")
                 await pilot.press("escape")
                 await pilot.press("q")
 
-    async def test_account_add_passes_textual_inputs_to_handoff(self):
+    async def test_account_add_sends_all_four_fields_to_op(self):
         with mock.patch.object(op, "installed", return_value=True), \
              mock.patch.object(op, "whoami", return_value=None), \
              mock.patch.object(op, "account_list", return_value=[]), \
-             mock.patch.object(op_cli, "_interactive_add_account", return_value=(True, "Connected")) as add, \
-             mock.patch.object(NovaSecretsApp, "suspend", return_value=contextlib.nullcontext()):
+             mock.patch.object(op, "account_add", return_value=True) as add:
             app = NovaSecretsApp()
-            async with app.run_test(size=(100, 30)) as pilot:
+            async with app.run_test(size=(100, 36)) as pilot:
                 await pilot.pause()
                 await pilot.press("enter")
                 await pilot.pause()
-                await pilot.press(*list("example.1password.com"))
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.press(*list("dev@example.com"))
-                await pilot.press("enter")
-                await pilot.pause()
+                from textual.widgets import Input as _Input
+                app.screen.query_one("#input-address", _Input).value = "nakdev.1password.com"
+                app.screen.query_one("#input-email", _Input).value = "dev@novanode.local"
+                app.screen.query_one("#input-secret", _Input).value = "A3-SECRET"
+                app.screen.query_one("#input-password", _Input).value = "hunter2"
+                await pilot.click("#action-flow-start")
+                for _ in range(10):
+                    if add.call_count:
+                        break
+                    await pilot.pause()
                 add.assert_called_once_with(
-                    address="example.1password.com",
-                    email="dev@example.com",
+                    signin=True,
+                    address="nakdev.1password.com",
+                    email="dev@novanode.local",
+                    secret_key="A3-SECRET",
+                    password="hunter2",
                 )
 
     async def test_usage_refresh_renders_new_rows_without_duplicate_ids(self):

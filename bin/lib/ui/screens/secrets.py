@@ -67,7 +67,7 @@ class SecretsScreen(Screen):
 
     def compose(self) -> ComposeResult:
         import os as _os
-        subtitle = "/ SECRETS · DEV" if _os.environ.get("NNOP_DEV") else "/ SECRETS"
+        subtitle = "/ 1PASSWORD · DEV" if _os.environ.get("NNOP_DEV") else "/ 1PASSWORD"
         yield NovaHeader("NOVANODE", subtitle)
         yield VerticalScroll(id="secrets-content")
         yield NovaFooter([("↑↓", "Navigate"), ("Enter", "Select"),
@@ -109,11 +109,15 @@ class SecretsScreen(Screen):
                                    classes="context"))
             self._heading(container, "AUTHENTICATION")
             for item in op_cli._signed_out_items(accounts, installed):
-                if not item.disabled:
-                    kind, payload = item.value
-                    shortcut = "A" if kind == "account-add" else ""
-                    self._add(container, item.label, (kind, payload),
-                              item.subtitle or "", shortcut)
+                if item.disabled:
+                    continue
+                kind, payload = item.value
+                if kind == "quit":  # dashboard appends its own Quit row.
+                    continue
+                shortcut = "A" if kind == "account-add" else ""
+                self._add(container, item.label, (kind, payload),
+                          item.subtitle or "", shortcut)
+            self._add(container, "Quit", ("quit", None), shortcut="Q")
         else:
             container.mount(Static(f"● CONNECTED  {identity.get('email') or identity.get('url') or '1Password'}"))
             if not ctx.project:
@@ -121,8 +125,12 @@ class SecretsScreen(Screen):
                 for item in op_cli._workspace_setup_items():
                     if item.heading:
                         self._heading(container, item.label)
-                    elif not item.disabled:
-                        self._add(container, item.label, item.value, item.subtitle or "")
+                        continue
+                    if item.disabled:
+                        continue
+                    if isinstance(item.value, tuple) and item.value[0] == "quit":
+                        continue  # dashboard appends its own Quit row.
+                    self._add(container, item.label, item.value, item.subtitle or "")
             else:
                 location = f"{ctx.project} / {ctx.default_app or '?'} / {ctx.default_env or '?'}"
                 container.mount(Static(location, classes="context"))
@@ -337,21 +345,31 @@ class OpActionScreen(Screen):
         self.label = label
         self.description = description
         self.read_only = choice[0] == "cmd" and tuple(choice[1]) in READ_ONLY
+        self._in_flight = False
 
     def compose(self) -> ComposeResult:
-        yield NovaHeader("NOVANODE", "/ SECRETS")
+        yield NovaHeader("NOVANODE", "/ 1PASSWORD")
         with VerticalScroll(id="action-content"):
             yield Static(self.label, classes="action-title")
             if self.description:
                 yield Static(self.description, classes="action-note")
             if self.choice[0] == "account-add":
-                yield Static("NovaNode will pass the sign-in address and email to 1Password.",
+                yield Static("Enter the four pieces 1Password needs. Everything is streamed to the official op CLI; NovaNode never stores or logs them.",
                              classes="action-note")
-                yield Static("The official op CLI then prompts for your Secret Key and account password only — those never pass through NovaNode.",
+                yield Static("Address · from your 1Password Emergency Kit (example: nakdev.1password.com).",
                              classes="action-note")
-                yield Input(placeholder="Sign-in address (e.g. example.1password.com)",
+                yield Input(placeholder="Sign-in address",
                             id="input-address")
-                yield Input(placeholder="Email", id="input-email")
+                yield Static("Email · the account's email.", classes="action-note")
+                yield Input(placeholder="you@example.com", id="input-email")
+                yield Static("Secret Key · 34-character key from the Emergency Kit.",
+                             classes="action-note")
+                yield Input(placeholder="A3-XXXXXX-XXXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+                            id="input-secret", password=True)
+                yield Static("Account password · the password you use to unlock 1Password.",
+                             classes="action-note")
+                yield Input(placeholder="Account password",
+                            id="input-password", password=True)
             elif self.choice[0] == "env-import":
                 yield Static("Push a local .env file into 1Password without leaving this UI.",
                              classes="action-note")
@@ -426,24 +444,22 @@ class OpActionScreen(Screen):
             self.execute()
 
     def execute(self) -> None:
+        if self._in_flight:
+            return
         kind, payload = self.choice
         if kind in ("env-import", "env-pull"):
+            self._in_flight = True
             self._run_env_flow(kind)
             return
-        address = email = None
         if kind == "account-add":
-            try:
-                address = (self.query_one("#input-address", Input).value or "").strip() or None
-                email = (self.query_one("#input-email", Input).value or "").strip() or None
-            except Exception:
-                address = email = None
+            self._in_flight = True
+            self._run_account_add()
+            return
         ok, note = False, ""
         try:
             with self.app.suspend():
                 if kind == "signin":
                     ok, note = op_cli._interactive_sign_in(op.account_list())
-                elif kind == "account-add":
-                    ok, note = op_cli._interactive_add_account(address=address, email=email)
                 elif kind == "add":
                     ok, note = op_cli._quick_add_secret(op_cli._context())
                 else:
@@ -463,6 +479,79 @@ class OpActionScreen(Screen):
         self.query_one("#action-flow-start", NovaAction).remove()
         self.query_one("#action-flow-back", NovaAction).focus()
 
+    def _run_account_add(self) -> None:
+        try:
+            address = (self.query_one("#input-address", Input).value or "").strip()
+            email = (self.query_one("#input-email", Input).value or "").strip()
+            secret_key = (self.query_one("#input-secret", Input).value or "").strip()
+            password = self.query_one("#input-password", Input).value or ""
+        except Exception:
+            address = email = secret_key = password = ""
+        missing = [name for name, value in
+                   (("address", address), ("email", email),
+                    ("Secret Key", secret_key), ("password", password))
+                   if not value]
+        content = self.query_one("#action-content", VerticalScroll)
+        if missing:
+            self._in_flight = False
+            content.mount(Static(
+                f"Fill in: {', '.join(missing)}.", classes="action-output"))
+            return
+        try:
+            self.query_one("#action-flow-start", NovaAction).remove()
+        except Exception:
+            pass
+        self._mount_output("Registering account with the official op CLI…")
+        self._account_add_worker(address, email, secret_key, password)
+
+    def _mount_output(self, text: str) -> Static:
+        """Create or update the #action-flow-output panel, idempotently."""
+        content = self.query_one("#action-content", VerticalScroll)
+        try:
+            existing = self.query_one("#action-flow-output", Static)
+            existing.update(text)
+            return existing
+        except Exception:
+            widget = Static(text, id="action-flow-output",
+                            classes="action-output")
+            content.mount(widget)
+            return widget
+
+    @work(thread=True, exclusive=True)
+    def _account_add_worker(self, address, email, secret_key, password) -> None:
+        ok, note = False, ""
+        try:
+            ok = op.account_add(signin=True, address=address, email=email,
+                                secret_key=secret_key, password=password)
+            if ok:
+                identity = op.whoami() or {}
+                who = identity.get("email") or identity.get("url") or "1Password account"
+                note = f"✓ Connected {who}"
+            else:
+                note = "Account add failed — check address, email, Secret Key, and password."
+        except op.OpError as err:
+            text = (err.stderr or str(err)).strip().splitlines()
+            note = text[-1] if text else "op account add failed"
+        except (OSError, subprocess.SubprocessError) as err:
+            note = f"Unable to run op: {err}"
+        self.app.call_from_thread(self._finish_account_add, note, ok)
+
+    def _finish_account_add(self, note: str, ok: bool) -> None:
+        self._in_flight = False
+        try:
+            self.query_one("#action-flow-output", Static).update(note)
+        except Exception:
+            pass
+        if ok:
+            try:
+                self.dashboard.refresh_menu(note)
+            except Exception:
+                pass
+        try:
+            self.query_one("#action-flow-back", NovaAction).focus()
+        except Exception:
+            pass
+
     def _run_env_flow(self, kind: str) -> None:
         try:
             path = (self.query_one("#input-path", Input).value or "").strip()
@@ -470,6 +559,7 @@ class OpActionScreen(Screen):
             path = ""
         content = self.query_one("#action-content", VerticalScroll)
         if not path:
+            self._in_flight = False
             content.mount(Static("Enter a path first.", classes="action-output"))
             try:
                 self.query_one("#input-path", Input).focus()
@@ -483,8 +573,7 @@ class OpActionScreen(Screen):
             args = ["env", "pull", "--materialize", "--force", "--out", path]
             label = f"env pull --materialize --out {path}"
         content.mount(Static(f"$ nn-op {label}", classes="action-output"))
-        placeholder = Static("Running…", id="action-flow-output", classes="action-output")
-        content.mount(placeholder)
+        self._mount_output("Running…")
         try:
             self.query_one("#action-flow-start", NovaAction).remove()
         except Exception:
@@ -510,6 +599,7 @@ class OpActionScreen(Screen):
         self.app.call_from_thread(self._finish_env_flow, output)
 
     def _finish_env_flow(self, output: str) -> None:
+        self._in_flight = False
         try:
             self.query_one("#action-flow-output", Static).update(output)
         except Exception:
@@ -520,14 +610,19 @@ class OpActionScreen(Screen):
             pass
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "input-address":
+        chain = {
+            "input-address": "input-email",
+            "input-email": "input-secret",
+            "input-secret": "input-password",
+        }
+        target = chain.get(event.input.id)
+        if target:
             try:
-                self.query_one("#input-email", Input).focus()
+                self.query_one(f"#{target}", Input).focus()
+                return
             except Exception:
                 pass
-        elif event.input.id == "input-email":
-            self.execute()
-        elif event.input.id == "input-path":
+        if event.input.id in ("input-password", "input-path"):
             self.execute()
 
     def action_activate(self) -> None:

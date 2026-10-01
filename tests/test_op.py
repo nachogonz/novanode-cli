@@ -30,18 +30,62 @@ class OpAuthenticationTests(unittest.TestCase):
         )
 
     def test_account_add_uses_native_secure_wizard_and_retains_session(self):
-        result = SimpleNamespace(returncode=0, stdout="new-session\n")
+        add_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        signin_ok = SimpleNamespace(returncode=0, stdout="new-session\n", stderr="")
         with mock.patch.dict(op.os.environ, {}, clear=True), \
-             mock.patch.object(op, "_run", return_value=result) as run:
+             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch("op.subprocess.run",
+                        side_effect=[add_ok, signin_ok]) as run:
             self.assertTrue(op.account_add(signin=True))
             self.assertEqual(op.os.environ["OP_SESSION"], "new-session")
-        run.assert_called_once_with(
-            ["account", "add", "--signin", "--raw"],
-            inherit_tty=True,
-            capture_stdout=True,
-            check=False,
-            timeout=None,
-        )
+        self.assertEqual(run.call_count, 2)
+        # Interactive add owns the TTY when fields are missing.
+        self.assertEqual(run.call_args_list[0].args[0], ["op", "account", "add"])
+        self.assertEqual(run.call_args_list[1].args[0], ["op", "signin", "--raw"])
+
+    def test_account_add_two_step_persistence_with_all_fields(self):
+        add_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        signin_ok = SimpleNamespace(returncode=0, stdout="piped-session\n", stderr="")
+        with mock.patch.dict(op.os.environ, {}, clear=True), \
+             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch("op.subprocess.run",
+                        side_effect=[add_ok, signin_ok]) as run:
+            self.assertTrue(op.account_add(
+                signin=True, address="nakdev.1password.com",
+                email="dev@novanode.local",
+                secret_key="A3-SECRET-KEY", password="hunter2"))
+            self.assertEqual(op.os.environ["OP_SESSION"], "piped-session")
+        add_call = run.call_args_list[0]
+        signin_call = run.call_args_list[1]
+        self.assertEqual(add_call.args[0], [
+            "op", "account", "add",
+            "--address", "nakdev.1password.com",
+            "--email", "dev@novanode.local",
+            "--secret-key", "A3-SECRET-KEY",
+        ])
+        self.assertTrue(add_call.kwargs.get("capture_output"))
+        self.assertNotIn("input", add_call.kwargs)
+        self.assertEqual(signin_call.args[0], [
+            "op", "signin", "--raw",
+            "--account", "nakdev.1password.com",
+        ])
+        self.assertEqual(signin_call.kwargs.get("input"), "hunter2\n")
+
+    def test_account_add_still_persists_when_signin_fails(self):
+        add_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        signin_bad = SimpleNamespace(returncode=1, stdout="",
+                                     stderr="wrong password\n")
+        with mock.patch.dict(op.os.environ, {}, clear=True), \
+             mock.patch.object(op, "installed", return_value=True), \
+             mock.patch("op.subprocess.run",
+                        side_effect=[add_ok, signin_bad]):
+            # Account was added, so the function returns True; session is
+            # just not retained in-process.
+            self.assertTrue(op.account_add(
+                signin=True, address="nakdev.1password.com",
+                email="dev@novanode.local",
+                secret_key="A3-SECRET-KEY", password="wrong"))
+            self.assertNotIn("OP_SESSION", op.os.environ)
 
     def test_signout_removes_in_memory_session(self):
         result = SimpleNamespace(returncode=0)

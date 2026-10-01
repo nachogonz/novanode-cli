@@ -197,7 +197,11 @@ def signin_session(account: Optional[str] = None) -> bool:
 
 
 def account_add(signin: bool = False, address: Optional[str] = None,
-                email: Optional[str] = None) -> bool:
+                email: Optional[str] = None,
+                secret_key: Optional[str] = None,
+                password: Optional[str] = None) -> bool:
+    # Mock just logs that we received the fields; nothing persists them.
+    _ = secret_key, password
     state = _load()
     new = dict(DEV_ACCOUNT)
     if address:

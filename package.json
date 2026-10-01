@@ -1,6 +1,6 @@
 {
   "name": "@nakdev-npm/novanode",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "NovaNode Asterisk telephony DevKit and Claude/Codex usage TUI",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
@@ -32,7 +32,8 @@
     "nn-usage": "bin/nn-usage",
     "usage": "bin/usage",
     "nn-op": "bin/nn-op",
-    "nnop": "bin/nnop"
+    "nnop": "bin/nnop",
+    "op": "bin/op"
   },
   "files": [
     "bin",
@@ -52,7 +53,7 @@
     "access": "public"
   },
   "scripts": {
-    "check": "bash -n bin/nn bin/nn-pbx bin/nn-usage bin/usage bin/nn-op bin/nnop bin/novanode && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 -m compileall -q bin/lib && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 -m unittest discover -s tests -p 'test_*.py' && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 bin/lib/main.py --version && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 bin/lib/op_cli.py --version",
+    "check": "bash -n bin/nn bin/nn-pbx bin/nn-usage bin/usage bin/nn-op bin/nnop bin/op bin/novanode && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 -m compileall -q bin/lib && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 -m unittest discover -s tests -p 'test_*.py' && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 bin/lib/main.py --version && env PYTHONPYCACHEPREFIX=/tmp/novanode-pycache python3 bin/lib/op_cli.py --version",
     "prepublishOnly": "npm run check"
   }
 }
