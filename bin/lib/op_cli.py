@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import op  # noqa: E402
 
 
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"

@@ -245,7 +245,8 @@ def flow_add_profile(provider):
     account = usage_accounts.account_for(provider, label)
     tuimenu.clear_screen()
     print()
-    print(f"  {paint(f'Connecting {title} · {account['label']}', BOLD)}")
+    msg = f"Connecting {title} · {account['label']}"
+    print(f"  {paint(msg, BOLD)}")
     print(f"  {paint('Your provider will open the browser and keep the credential.', DIM)}")
     print()
     ok, detail = usage_accounts.connect_account(account)
@@ -286,7 +287,8 @@ def flow_profile_actions(account, current, is_shadowed):
     if choice == "reconnect":
         tuimenu.clear_screen()
         print()
-        print(f"  {paint(f'Reconnecting {title} · {account['label']}', BOLD)}")
+        msg = f"Reconnecting {title} · {account['label']}"
+        print(f"  {paint(msg, BOLD)}")
         print()
         ok, detail = usage_accounts.connect_account(account)
         return paint(f"Connected {title} · {account['label']}" if ok else f"Error: {detail}",
@@ -391,7 +393,8 @@ def connect(provider, label=None):
         label = entered or suggested
     account = usage_accounts.account_for(provider, label)
     print()
-    print(f"  {paint(f'Connecting {title} · {account['label']}', BOLD)}")
+    msg = f"Connecting {title} · {account['label']}"
+    print(f"  {paint(msg, BOLD)}")
     print(f"  {paint('Your provider will open the browser and keep the credential.', DIM)}")
     print()
     ok, detail = usage_accounts.connect_account(account)

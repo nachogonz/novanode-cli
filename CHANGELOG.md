@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.4
+
+- Fix syntax error in `nn-usage` / `usage connect`: nested f-strings with conflicting quotes caused `SyntaxError: f-string: unmatched '['` on launch. Extracted inner strings to variables before passing to paint().
+
 ## 1.3.3
 
 - Fix account registration with the current 1Password CLI: the Add Account screen now hands the terminal to `op account add --signin --raw` for the Secret Key and password prompts instead of passing an unsupported `--secret-key` flag. Accounts already configured in the CLI go straight to sign-in, and other setup errors remain visible before returning to the dashboard.
