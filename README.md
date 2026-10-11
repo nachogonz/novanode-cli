@@ -203,6 +203,11 @@ working `.env` in seconds).
 npm install -g @nakdev-npm/novanode
 ```
 
+The npm installer sets up the Textual UI in a package-local Python environment.
+If you install from source or use a custom `NOVANODE_PYTHON`, install
+`textual==8.2.8` in that interpreter to use the interactive dashboard.
+`usage --classic` opens the plain-text dashboard without Textual.
+
 Homebrew releases also install `nn`, `nn-pbx`, `nn-usage`, `usage`, and the `novanode` compatibility alias.
 
 ## License

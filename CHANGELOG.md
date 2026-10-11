@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.5
+
+- Bundle Textual installation with npm in a package-local Python environment, so `nn-usage` and `usage` open the NovaNode UI on fresh installations.
+- Show a clear dependency error instead of silently opening the old dashboard when the UI cannot load; `--classic` remains available on request.
+
 ## 1.3.4
 
 - Fix syntax error in `nn-usage` / `usage connect`: nested f-strings with conflicting quotes caused `SyntaxError: f-string: unmatched '['` on launch. Extracted inner strings to variables before passing to paint().

@@ -435,9 +435,11 @@ def main(argv=None):
             return 2
         try:
             from ui.app_hub import NovaHubApp
-        except ImportError:
-            interactive_sessions()
-            return 0
+        except ImportError as error:
+            print(f"usage connect: Textual UI unavailable ({error}). "
+                  "Reinstall NovaNode or install Textual for your Python interpreter.",
+                  file=sys.stderr)
+            return 1
         app = NovaHubApp()
         app._initial_target = "sessions"
         app.run()
@@ -461,9 +463,11 @@ def main(argv=None):
     try:
         from ui.app_hub import NovaHubApp
         from ui.screens.connect import ConnectScreen
-    except ImportError:
-        interactive_hub()
-        return 0
+    except ImportError as error:
+        print(f"usage connect: Textual UI unavailable ({error}). "
+              "Reinstall NovaNode or install Textual for your Python interpreter.",
+              file=sys.stderr)
+        return 1
     app = NovaHubApp()
     app._initial_target = "connect"
     app.run()

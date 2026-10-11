@@ -11,7 +11,7 @@ import usage
 import usage_connect
 
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
 RED = "\033[38;5;196m"
@@ -154,9 +154,11 @@ def main(argv=None):
     if not classic and not argv and sys.stdin.isatty() and sys.stdout.isatty():
         try:
             from ui.app_hub import NovaHubApp
-        except ImportError:
-            dashboard(usage.fetch_usage())
-            return 0
+        except ImportError as error:
+            print(f"nn-usage: Textual UI unavailable ({error}). Reinstall NovaNode or "
+                  "install Textual for your Python interpreter; use --classic "
+                  "for the plain dashboard.", file=sys.stderr)
+            return 1
         app = NovaHubApp()
         app._initial_target = "usage"
         app.run()
